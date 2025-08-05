@@ -106,8 +106,6 @@ class Record:
         # write the popped row to the file
         if self.buffer is None:
             raise ValueError("Buffer is empty")
-        with open(self.path, "a") as f:
-            f.write("\n")
 
         n_attempts = 0
         while n_attempts < 2:
@@ -123,7 +121,7 @@ class Record:
                 logger.debug(f"Buffer row: \n{buffer_row}")
                 df_row = pd.DataFrame(buffer_row).T
                 logger.debug(f"Put buffer row in dataframe")
-                df_row.to_csv(self.path, index=False, header=False, mode="a")
+                df_row.to_csv(self.path, index=False, header=False, mode="a", lineterminator='\n')
                 logger.debug(f"Successfully saved buffer row {row} to csv.")
                 self.buffer.drop(row, inplace=True)
                 logger.debug(f"Successfully dropped buffer row {row}.")
