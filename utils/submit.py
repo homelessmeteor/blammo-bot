@@ -238,6 +238,14 @@ async def _check_scramble_duplicate(word: str):
                     logger.info(f"Duplicate scramble word detected: {word}")
                     return False
         
+        # Read the submissions CSV file
+        with open(SUBMISSION_FNAME, "r", encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            # Check if word already exists (case insensitive)
+            for row in reader:
+                if 'word' in row and row['word'].lower() == word.lower():
+                    logger.info(f"Duplicate scramble word detected: {word}")
+                    return False
         # Word not found in existing database
         return True
         
@@ -247,6 +255,21 @@ async def _check_scramble_duplicate(word: str):
     except Exception as e:
         logger.error(f"Error checking scramble duplicates: {e}")
         return True  # Allow submission on error to avoid blocking users
+
+
+def _ensure_file_ends_with_newline(file_path: str) -> None:
+    # Check if file exists and doesn't end with newline, add one
+    if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+        try:
+            with open(file_path, 'rb') as f:
+                f.seek(-1, 2)  # Go to last byte
+                last_byte = f.read(1)
+                if last_byte != b'\n':
+                    logger.debug(f"File {file_path} doesn't end with newline, adding one")
+                    with open(file_path, 'a') as append_file:
+                        append_file.write('\n')
+        except Exception as e:
+            logger.warning(f"Could not check/fix newline in {file_path}: {e}")
 
 
 async def _write_dict_to_csv(d: dict):
@@ -260,16 +283,18 @@ async def _write_dict_to_csv(d: dict):
     if not os.path.isfile(SUBMISSION_FNAME):
         # if the file does not exist, create it and write the header
         with open(SUBMISSION_FNAME, "w") as f:
-            f.write("username,question,answer,raw,timestamp\n")
+            f.write("username,question,answer,word,raw,timestamp\n")
 
     # now, write the dictionary to the csv file
     try:
+        # Ensure file ends with newline before appending
+        _ensure_file_ends_with_newline(SUBMISSION_FNAME)
         # with open(SUBMISSION_FNAME, 'a') as f:
         #     f.write(f'"{d["username"]}","{d["question"]}","{d["answer"]}","{d["raw"]}","{d["timestamp"]}"\n')
         # use csv module instead of writing to file directly
         with open(SUBMISSION_FNAME, "a", newline="") as f:
             writer = csv.writer(
-                f, delimiter=",", quotechar='"', quoting=csv.QUOTE_MINIMAL
+                f, delimiter=",", quotechar='"', quoting=csv.QUOTE_MINIMAL, lineterminator='\n'
             )
             writer.writerow(
                 [

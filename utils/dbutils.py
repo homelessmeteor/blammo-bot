@@ -39,7 +39,7 @@ def _load_csv(path: str):
 
 
 def _save_csv(df: pd.DataFrame, path: str):
-    df.to_csv(path, index=False)
+    df.to_csv(path, index=False, lineterminator='\n')
 
 
 def _replace_duplicates(df: pd.DataFrame, game_type: str):

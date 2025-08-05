@@ -1,5 +1,5 @@
 import pandas as pd
-import logging, random
+import logging, random, os
 from difflib import SequenceMatcher
 
 from log.loggers.custom_format import CustomFormatter  # for level colors
@@ -27,6 +27,21 @@ logger.addHandler(stream_handler)
 
 def _punctuation(s: str) -> str:
     pass
+
+
+def _ensure_file_ends_with_newline(file_path: str) -> None:
+    # Check if file exists and doesn't end with newline, add one
+    if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+        try:
+            with open(file_path, 'rb') as f:
+                f.seek(-1, 2)  # Go to last byte
+                last_byte = f.read(1)
+                if last_byte != b'\n':
+                    logger.debug(f"File {file_path} doesn't end with newline, adding one")
+                    with open(file_path, 'a') as append_file:
+                        append_file.write('\n')
+        except Exception as e:
+            logger.warning(f"Could not check/fix newline in {file_path}: {e}")
 
 
 def fuzzy_check(row):
@@ -114,11 +129,14 @@ class TriviaData:
                 if "not" not in str(q["question"]):  # TEMPORARY FIX!
                     found_valid = True
             else:
+                # Ensure file ends with newline before appending
+                _ensure_file_ends_with_newline("../blammo-bot-private/rejected_questions.csv")
                 q_df.to_csv(
                     "../blammo-bot-private/rejected_questions.csv",
                     mode="a",
                     header=False,
                     index=False,
+                    lineterminator='\n'
                 )
                 hbar = "=" * 81
                 logger.info(f"{hbar}\nQuestion disabled, trying again...")
