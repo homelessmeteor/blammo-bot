@@ -1061,6 +1061,65 @@ since new scramble round started."
             return
 
     @Command(
+        "health",
+        help="Check database health and integrity",
+        permission="mod",
+        syntax="#health [all|trivia|scramble|user_data|timestamps|submissions|record_data]",
+    )
+    async def cmd_health(msg: Message):
+        """Check database health with optional database-specific checks"""
+        args = msg.content.split(" ")
+        
+        # Default to "all" if no subcommand provided
+        subcommand = "all"
+        if len(args) > 1:
+            subcommand = args[1].lower()
+        
+        # Map subcommand to database names
+        valid_databases = ["all", "trivia", "scramble", "user_data", "timestamps", "submissions", "record_data"]
+        
+        if subcommand not in valid_databases:
+            await msg.reply(f"[Health Check] ❌ Invalid database. Valid options: {', '.join(valid_databases)}")
+            return
+        
+        logger.info(f"[Health Check] {msg.author} called health command for: {subcommand}")
+        
+        try:
+            from utils.db_health import DatabaseHealthChecker
+            
+            checker = DatabaseHealthChecker()
+            
+            if subcommand == "all":
+                # Check all databases
+                issues = checker.check_all_databases()
+            else:
+                # Check specific database
+                issues = checker.check_specific_database(subcommand)
+            
+            critical_issues = [i for i in issues if i.severity == 'critical']
+            
+            # Log all issues found
+            if issues:
+                for issue in issues:
+                    log_level = logger.error if issue.severity == 'critical' else logger.warning
+                    location_info = f" at {issue.location}" if issue.location else ""
+                    log_level(f"[Health Check] {issue.database}: {issue.issue_type} - {issue.description}{location_info}")
+            
+            if not issues:
+                logger.info(f"[Health Check] {subcommand}: All databases healthy")
+                await msg.reply("[Health Check] DANKHACKERMANS All databases are healthy!" if subcommand == "all" else "[Health Check] DANKHACKERMANS Database is healthy!")
+            elif critical_issues:
+                logger.warning(f"[Health Check] {subcommand}: Found {len(critical_issues)} critical issues out of {len(issues)} total")
+                await msg.reply(f"[Health Check] DinkDonk ⚠️ Found {len(critical_issues)} critical database issues! ⚠️ DinkDonk")
+            else:
+                logger.info(f"[Health Check] {subcommand}: Found {len(issues)} non-critical issues")
+                await msg.reply(f"[Health Check] DankG ⚠️ Found {len(issues)} database issues (non-critical). ⚠️")
+                
+        except Exception as e:
+            logger.error(f"[Health Check] Error running database health check: {e}")
+            await msg.reply("[Health Check] GULP Database health check failed. Check logs for details.")
+
+    @Command(
         "logger",
         help="Interact with the logger system.",
         permission="admin",
