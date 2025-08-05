@@ -1,0 +1,6 @@
+qid,question_string,answer_string,time_elapsed,outcome,username,points_awarded,guess_string,guess_similarity
+t1234567890,What is the capital of France?,Paris,15.5,solved,testuser1,10,paris,1.0
+s2345678901,COMPUTER,,12.3,solved,testuser2,15,computer,1.0
+t3456789012,What is 2 + 2?,4,8.7,solved,testuser3,5,4,1.0
+t4567890123,What planet is closest to the sun?,Mercury,25.0,timeout,testuser4,0,,0.0
+s5678901234,KEYBOARD,,18.2,solved,testuser1,20,keyboard,1.0
