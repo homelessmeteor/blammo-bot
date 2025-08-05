@@ -119,6 +119,7 @@ class TriviaData:
                     mode="a",
                     header=False,
                     index=False,
+                    lineterminator='\n'
                 )
                 hbar = "=" * 81
                 logger.info(f"{hbar}\nQuestion disabled, trying again...")

@@ -27,7 +27,7 @@ class PointData:
 
     def _write_df(self):
         # writes the self.df object to the path
-        self.df.to_csv(self.path, index=False)
+        self.df.to_csv(self.path, index=False, lineterminator='\n')
 
     def _validate_user(self, username: str):
         username = username.lower()
