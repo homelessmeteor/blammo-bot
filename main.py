@@ -1056,7 +1056,7 @@ since new scramble round started."
                 if not issues:
                     await msg.reply("DANKHACKERMANS All databases are healthy!")
                 elif critical_issues:
-                    await msg.reply(f"DinkDonk ⚠️ Found {len(critical_issues)} critical database issues! ⚠️ DinkDonk")
+                    await msg.reply(f"GULP ⚠️ Found {len(critical_issues)} critical database issues! ⚠️")
                 else:
                     await msg.reply(f"DankG ⚠️ Found {len(issues)} database issues (non-critical). ⚠️")
                     
