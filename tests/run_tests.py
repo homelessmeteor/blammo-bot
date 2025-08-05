@@ -22,6 +22,7 @@ from test_timestamps import TestTimestamps, TestCooldowns
 from test_scramble_duplicates import TestScrambleDuplicates
 from test_db_health import TestDatabaseHealthChecker
 from test_trivia_fuzzy import TestTriviaFuzzyMatching
+from test_csv_malformation import TestCSVMalformationDetection
 
 def run_all_tests():
     """Run all test suites"""
@@ -44,7 +45,8 @@ def run_all_tests():
         TestCooldowns,
         TestScrambleDuplicates,
         TestDatabaseHealthChecker,
-        TestTriviaFuzzyMatching
+        TestTriviaFuzzyMatching,
+        TestCSVMalformationDetection
     ]
     
     for test_class in test_classes:

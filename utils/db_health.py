@@ -113,6 +113,9 @@ class DatabaseHealthChecker:
             # Check for duplicates
             self._check_duplicates(db_name, db_path)
             
+            # Check for malformed CSV lines
+            self._check_csv_malformation(db_name, db_path)
+            
             # Check data integrity
             self._check_data_integrity(db_name, db_path)
             
@@ -410,6 +413,211 @@ class DatabaseHealthChecker:
     def _check_user_data_duplicates(self, df: pd.DataFrame, db_name: str):
         """Check for duplicate users"""
         self._check_exact_duplicates(df, db_name, 'username', 'Duplicate user found', 'critical')
+    
+    def _check_csv_malformation(self, db_name: str, db_path: str):
+        """Check for malformed CSV lines that could cause parsing issues"""
+        try:
+            with open(db_path, 'r', encoding='utf-8', errors='replace') as f:
+                lines = f.readlines()
+            
+            # Try fallback encodings if UTF-8 fails
+            used_fallback_encoding = False
+            fallback_encoding_used = None
+            if not lines or any('�' in line for line in lines):
+                for encoding in ['latin-1', 'cp1252']:
+                    try:
+                        with open(db_path, 'r', encoding=encoding) as f:
+                            lines = f.readlines()
+                        used_fallback_encoding = True
+                        fallback_encoding_used = encoding
+                        break
+                    except UnicodeDecodeError:
+                        continue
+            
+            # Report if fallback encoding was used
+            if used_fallback_encoding:
+                self.issues.append(DatabaseHealthIssue(
+                    database=db_name,
+                    issue_type='encoding_issue',
+                    severity='warning',
+                    description=f"File required fallback encoding '{fallback_encoding_used}' instead of UTF-8, indicating potential encoding issues",
+                    location="file encoding"
+                ))
+            
+            if not lines:
+                return
+                
+            # Get expected field count from header
+            header_line = lines[0].strip()
+            if not header_line:
+                self.issues.append(DatabaseHealthIssue(
+                    database=db_name,
+                    issue_type='csv_malformation',
+                    severity='critical',
+                    description="CSV file has empty or missing header line",
+                    location="line 1"
+                ))
+                return
+            
+            # Parse header to get expected field count
+            try:
+                header_fields = list(csv.reader([header_line]))[0]
+                expected_field_count = len(header_fields)
+            except Exception as e:
+                self.issues.append(DatabaseHealthIssue(
+                    database=db_name,
+                    issue_type='csv_malformation',
+                    severity='critical',
+                    description=f"Could not parse header line: {e}",
+                    location="line 1",
+                    affected_data=header_line
+                ))
+                return
+            
+            # Check each data line for malformation
+            for line_num, line in enumerate(lines[1:], 2):  # Start from line 2
+                raw_line = line.rstrip('\n\r')
+                
+                # Skip empty lines
+                if not raw_line.strip():
+                    continue
+                
+                # Check for concatenated lines (missing newlines)
+                if self._detect_concatenated_lines(raw_line, expected_field_count):
+                    self.issues.append(DatabaseHealthIssue(
+                        database=db_name,
+                        issue_type='csv_malformation',
+                        severity='critical',
+                        description="Multiple CSV records concatenated without newline separator",
+                        location=f"line {line_num}",
+                        affected_data=raw_line[:100] + "..." if len(raw_line) > 100 else raw_line
+                    ))
+                
+                # Check field count consistency
+                try:
+                    parsed_fields = list(csv.reader([raw_line]))[0]
+                    actual_field_count = len(parsed_fields)
+                    
+                    if actual_field_count != expected_field_count:
+                        self.issues.append(DatabaseHealthIssue(
+                            database=db_name,
+                            issue_type='csv_malformation',
+                            severity='warning',
+                            description=f"Field count mismatch: expected {expected_field_count}, got {actual_field_count}",
+                            location=f"line {line_num}",
+                            affected_data=raw_line[:100] + "..." if len(raw_line) > 100 else raw_line
+                        ))
+                
+                except csv.Error as e:
+                    self.issues.append(DatabaseHealthIssue(
+                        database=db_name,
+                        issue_type='csv_malformation',
+                        severity='critical',
+                        description=f"CSV parsing error: {e}",
+                        location=f"line {line_num}",
+                        affected_data=raw_line[:100] + "..." if len(raw_line) > 100 else raw_line
+                    ))
+                
+                # Check for unescaped quotes and commas
+                if self._detect_quote_issues(raw_line):
+                    self.issues.append(DatabaseHealthIssue(
+                        database=db_name,
+                        issue_type='csv_malformation',
+                        severity='warning',
+                        description="Potentially unescaped quotes or malformed quoting",
+                        location=f"line {line_num}",
+                        affected_data=raw_line[:100] + "..." if len(raw_line) > 100 else raw_line
+                    ))
+                    
+                # Check for control characters or unusual characters
+                if self._detect_control_characters(raw_line):
+                    self.issues.append(DatabaseHealthIssue(
+                        database=db_name,
+                        issue_type='csv_malformation',
+                        severity='warning',
+                        description="Line contains control characters or unusual whitespace",
+                        location=f"line {line_num}",
+                        affected_data=repr(raw_line[:100]) + "..." if len(raw_line) > 100 else repr(raw_line)
+                    ))
+                    
+        except Exception as e:
+            self.issues.append(DatabaseHealthIssue(
+                database=db_name,
+                issue_type='csv_malformation',
+                severity='critical',
+                description=f"Could not check CSV malformation: {e}"
+            ))
+    
+    def _detect_concatenated_lines(self, line: str, expected_field_count: int) -> bool:
+        """Detect if line contains multiple concatenated CSV records"""
+        # Look for patterns that suggest concatenated lines:
+        # 1. Too many fields (significantly more than expected)
+        # 2. Records concatenated without proper CSV separation
+        # 3. Multiple complete record patterns with specific indicators
+        
+        try:
+            # Quick field count check - only flag if significantly more fields
+            rough_field_count = line.count(',') + 1
+            if rough_field_count > expected_field_count * 2.0:  # Double the expected fields
+                return True
+            
+            # Look for concatenation patterns that indicate missing newlines
+            # Pattern 1: timestamp followed immediately by text without comma
+            # Example: "1234.567username" or "1234.567user1,data"
+            if re.search(r'\d{10,13}\.\d+[a-zA-Z_]\w*', line):
+                return True
+            
+            # Pattern 2: Multiple complete record structures in one line
+            # Look for patterns like: "data,data,timestampuser,data,data,timestamp"
+            # This is more specific than just counting timestamps
+            if re.search(r'\d{10,13}\.\d+[a-zA-Z_]+[^,]*,.*\d{10,13}\.\d+', line):
+                return True
+            
+            # Pattern 3: Excessive field count combined with timestamp patterns
+            # Only trigger if we have way too many fields AND multiple timestamps
+            if rough_field_count > expected_field_count * 1.8:
+                timestamp_pattern = r'\d{10,13}\.\d+'
+                timestamps = re.findall(timestamp_pattern, line)
+                # Only flag if we have both too many fields AND it's not just a timestamps-only record
+                if len(timestamps) > 1:
+                    # Check if this looks like a timestamps file (all fields are timestamps)
+                    fields = [field.strip() for field in line.split(',')]
+                    timestamp_fields = [field for field in fields if re.match(r'^\d{10,13}\.\d+$', field)]
+                    # If most fields are timestamps, this is likely a valid timestamps file
+                    if len(timestamp_fields) < len(fields) * 0.8:  # Less than 80% are timestamps
+                        return True
+                
+            return False
+            
+        except Exception:
+            return False
+    
+    def _detect_quote_issues(self, line: str) -> bool:
+        """Detect potential quoting issues in CSV line"""
+        # Count quotes - should be even number for properly quoted fields
+        quote_count = line.count('"')
+        if quote_count > 0 and quote_count % 2 != 0:
+            return True
+            
+        # Look for unescaped quotes in the middle of fields
+        # Pattern: text"text (quote not at field boundary)
+        if re.search(r'[^,"]"[^,"]', line):
+            return True
+            
+        return False
+    
+    def _detect_control_characters(self, line: str) -> bool:
+        """Detect control characters that shouldn't be in CSV data"""
+        # Check for control characters except tab, newline, carriage return
+        for char in line:
+            if ord(char) < 32 and char not in ['\t', '\n', '\r']:
+                return True
+        
+        # Check for unusual Unicode characters that might indicate encoding issues
+        if any(ord(char) > 65535 for char in line):
+            return True
+            
+        return False
     
     def _check_data_integrity(self, db_name: str, db_path: str):
         """Check data integrity and required columns"""

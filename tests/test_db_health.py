@@ -88,6 +88,25 @@ Question 4,Answer 4,TRUE,t3456789012"""
             self.assertGreater(issue.line_number, 1, "Line numbers should be greater than 1 (header is line 1)")
             self.assertIn(f"Line: {issue.line_number}", str(issue), "String representation should include line number")
     
+    def test_malformed_csv(self):
+        """Test detection of malformed CSV data"""
+        # Create a test file with malformed CSV
+        test_content = """question,correct_answer,enabled,qid
+"Unescaped quote in middle,Answer,TRUE,t1234567890
+Normal question,Answer,TRUE,t2345678901
+Question with extra,fields,in,the,middle,TRUE,t3456789012"""
+        
+        test_file = os.path.join(self.temp_dir, 'trivia.csv')
+        with open(test_file, 'w') as f:
+            f.write(test_content)
+        
+        # Run health check
+        issues = self.checker.check_all_databases()
+        
+        # Should detect CSV malformation issues
+        csv_issues = [issue for issue in issues if issue.issue_type == 'csv_malformation']
+        self.assertGreater(len(csv_issues), 0, "Should detect CSV malformation")
+
     def test_missing_columns(self):
         """Test detection of missing required columns"""
         # Create a test file missing required columns
