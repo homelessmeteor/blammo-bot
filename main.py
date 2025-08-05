@@ -1025,6 +1025,7 @@ since new scramble round started."
             "trivia",
             "scramble",
             "secretcommand",
+            "health",
         ]
 
         if subcommand not in allowed_subcommands:
@@ -1044,6 +1045,24 @@ since new scramble round started."
         elif subcommand == "secretcommand":
             logger.debug(f"Reloading secretcommand")
             await _reload_secretcommand(msg)
+
+        elif subcommand == "health":
+            logger.debug(f"Running database health check")
+            try:
+                from utils.db_health import run_health_check
+                issues = run_health_check()
+                critical_issues = [i for i in issues if i.severity == 'critical']
+                
+                if not issues:
+                    await msg.reply("DANKHACKERMANS All databases are healthy!")
+                elif critical_issues:
+                    await msg.reply(f"DinkDonk ⚠️ Found {len(critical_issues)} critical database issues! ⚠️ DinkDonk")
+                else:
+                    await msg.reply(f"DankG ⚠️ Found {len(issues)} database issues (non-critical). ⚠️")
+                    
+            except Exception as e:
+                logger.error(f"Error running database health check: {e}")
+                await msg.reply("❌ Database health check failed. Check logs for details.")
 
         elif subcommand == "all":
             logger.debug(f"Reloading all databases")

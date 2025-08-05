@@ -9,12 +9,19 @@ import os
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Mock twitchbot before importing test modules that need it
+from unittest.mock import MagicMock
+sys.modules['twitchbot'] = MagicMock()
+sys.modules['twitchbot.message'] = MagicMock()
+
 # Import test modules
 from test_points import TestPointsSystem, TestPointsValidation
 from test_dbutils import TestDatabaseUtils, TestDatabaseHealth  
 from test_submit import TestSubmissionValidation, TestSubmissionProcess
 from test_timestamps import TestTimestamps, TestCooldowns
 from test_scramble_duplicates import TestScrambleDuplicates
+from test_db_health import TestDatabaseHealthChecker
+from test_trivia_fuzzy import TestTriviaFuzzyMatching
 
 def run_all_tests():
     """Run all test suites"""
@@ -35,7 +42,9 @@ def run_all_tests():
         TestSubmissionProcess,
         TestTimestamps,
         TestCooldowns,
-        TestScrambleDuplicates
+        TestScrambleDuplicates,
+        TestDatabaseHealthChecker,
+        TestTriviaFuzzyMatching
     ]
     
     for test_class in test_classes:
