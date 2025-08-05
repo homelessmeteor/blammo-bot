@@ -215,7 +215,7 @@ async def _parse_question(content: str, game: str):
 #         return f'"{s}"'
 
 
-async def _check_scrable_duplicate(word: str):
+async def _check_scramble_duplicate(word: str):
     """
     Checks current scramble list to see if word has already been used.
 
@@ -227,12 +227,26 @@ async def _check_scrable_duplicate(word: str):
 
     """
     global SCRAMBLE_PATH
-
-    # open scramble.csv and read the first row
-    with open(SCRAMBLE_PATH, "r") as f:
-        reader = csv.reader(f)
-        first_row = next(reader)
-        words = first_row[0].split(" ")
+    
+    try:
+        # Read the scramble CSV file
+        with open(SCRAMBLE_PATH, "r", encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            # Check if word already exists (case insensitive)
+            for row in reader:
+                if 'word' in row and row['word'].lower() == word.lower():
+                    logger.info(f"Duplicate scramble word detected: {word}")
+                    return False
+        
+        # Word not found in existing database
+        return True
+        
+    except FileNotFoundError:
+        logger.warning(f"Scramble file not found: {SCRAMBLE_PATH}")
+        return True  # Allow submission if file doesn't exist
+    except Exception as e:
+        logger.error(f"Error checking scramble duplicates: {e}")
+        return True  # Allow submission on error to avoid blocking users
 
 
 async def _write_dict_to_csv(d: dict):
@@ -374,6 +388,12 @@ async def submit(msg: Message) -> str | bool:
         return (
             f"That word is too long. Please keep it under {MAX_WORD_LENGTH} characters."
         )
+    elif game == "scramble":
+        # Check for duplicate scramble words
+        is_unique = await _check_scramble_duplicate(word)
+        if not is_unique:
+            logger.info(f"User {author} tried to submit duplicate scramble word: {word}")
+            return f"DankG scramble for '{word}' already exists."
 
     outcome: bool = await _write_dict_to_csv(submission)
     if outcome:

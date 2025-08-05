@@ -14,6 +14,7 @@ from test_points import TestPointsSystem, TestPointsValidation
 from test_dbutils import TestDatabaseUtils, TestDatabaseHealth  
 from test_submit import TestSubmissionValidation, TestSubmissionProcess
 from test_timestamps import TestTimestamps, TestCooldowns
+from test_scramble_duplicates import TestScrambleDuplicates
 
 def run_all_tests():
     """Run all test suites"""
@@ -33,7 +34,8 @@ def run_all_tests():
         TestSubmissionValidation,
         TestSubmissionProcess,
         TestTimestamps,
-        TestCooldowns
+        TestCooldowns,
+        TestScrambleDuplicates
     ]
     
     for test_class in test_classes:
