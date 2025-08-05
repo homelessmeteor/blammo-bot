@@ -51,6 +51,14 @@ async def _check_safety(content):
 
     # TODO: make this function sensitive to special characters like \n.
     #       Adding it to the list below doesn't work for some reason.
+    
+    # Special check for ".." but allow "..." and more dots
+    # Block patterns with exactly two dots but allow three or more
+    if re.search(r'(^|[^.])\.\.[^.]', content) or content == ".." or content.startswith("../") or content.endswith("/.."):
+        # This matches ".." that is not part of "..." or longer sequences
+        logger.error(f"[ACTION REQUIRED] content contains suspicious '..' pattern: {content}")
+        return False
+    
     if any(
         i in content
         for i in [
@@ -61,7 +69,6 @@ async def _check_safety(content):
             "eval(",
             "exec(",
             "open(",
-            # "..",
             "0x27",
             "0x3f",
             "0x5c",
