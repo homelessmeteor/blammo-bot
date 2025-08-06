@@ -105,6 +105,7 @@ class BlammoBot(BaseBot):
     COMMAND_SHUTDOWN = False
     restart_scheduled = False
     shutdown_scheduled = False
+    stream_online_prev = False
     TRIVIA_QID = ""
     SCRAMBLE_QID = ""
     silent_cooldown = {
