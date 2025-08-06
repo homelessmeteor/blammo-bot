@@ -21,23 +21,10 @@ from typing import List, Dict, Tuple, Optional, Any
 from pathlib import Path
 from difflib import SequenceMatcher
 
-from log.loggers.custom_format import CustomFormatter
+from log.loggers.rotating_logger import get_rotating_logger
 
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
-
-formatter1 = logging.Formatter(
-    "%(asctime)s - %(name)s - %(levelname)s : %(message)s",
-    datefmt="%m/%d/%Y %I:%M:%S %p",
-)
-file_handler = logging.FileHandler("logs.log")
-file_handler.setFormatter(formatter1)
-
-stream_handler = logging.StreamHandler()
-stream_handler.setFormatter(CustomFormatter())
-
-logger.addHandler(file_handler)
-logger.addHandler(stream_handler)
+# Set up rotating logger with 10MB max size and 5 backup files
+logger = get_rotating_logger(__name__)
 
 
 class DatabaseHealthIssue:
