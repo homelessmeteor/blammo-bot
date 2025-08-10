@@ -36,6 +36,7 @@ from utils.secrets import get_oauth, get_client_id, get_client_secret, get_wa_ap
 from utils import submit
 from utils import secretcommand
 from utils.randommeal import get_meal
+from utils import report
 import check_online
 
 # TODO: Clean up import section
@@ -71,6 +72,10 @@ CHANNEL_ONLINE_CHECK_INTERVAL = check_online.get_check_interval()
 
 class BlammoBot(BaseBot):
     logger.debug("BlammoBot class instantiated")
+    
+    # Class variables for completed game tracking
+    last_completed_trivia = None
+    last_completed_scramble = None
 
     global points
     global timestamps_dict  # used to track when the last time a command was used
@@ -335,9 +340,11 @@ class BlammoBot(BaseBot):
 
                 # >>> record section <<<
                 logger.debug(f"[Trivia] Writing trivia record for {TRIVIA_QID}")
-                trivia_delta = datetime.datetime.now() - timestamps.read(
-                    "trivia_started"
-                )
+                trivia_start = timestamps.read("trivia_started")
+                if trivia_start:
+                    trivia_delta = datetime.datetime.now() - trivia_start
+                else:
+                    trivia_delta = datetime.timedelta(seconds=0)
                 record.add_time_elapsed(TRIVIA_QID, trivia_delta.total_seconds())
                 record.add_outcome(TRIVIA_QID, "solved")
                 record.add_username(TRIVIA_QID, msg.author)
@@ -345,6 +352,16 @@ class BlammoBot(BaseBot):
                 record.add_guess_string(TRIVIA_QID, msg.content)
                 record.add_guess_similarity(TRIVIA_QID, similarity)
                 record.write(TRIVIA_QID)
+                
+                # >>> completed game tracking for reports <<<
+                BlammoBot.last_completed_trivia = {
+                    'qid': TRIVIA_QID,
+                    'question': questions[0],
+                    'answer': questions[1],
+                    'round_ended_timestamp': datetime.datetime.now()
+                }
+                logger.debug(f"Set last_completed_trivia: {BlammoBot.last_completed_trivia}")
+                
                 TRIVIA_QID = ""
 
             elif similarity >= 0.75 and len(msg.content) < 250:
@@ -358,9 +375,11 @@ class BlammoBot(BaseBot):
 
                 # >>> record section <<<
                 logger.debug(f"[Trivia] Writing trivia record for {TRIVIA_QID}")
-                trivia_delta = datetime.datetime.now() - timestamps.read(
-                    "trivia_started"
-                )
+                trivia_start = timestamps.read("trivia_started")
+                if trivia_start:
+                    trivia_delta = datetime.datetime.now() - trivia_start
+                else:
+                    trivia_delta = datetime.timedelta(seconds=0)
                 record.add_time_elapsed(TRIVIA_QID, trivia_delta.total_seconds())
                 record.add_outcome(TRIVIA_QID, "solved")
                 record.add_username(TRIVIA_QID, msg.author)
@@ -368,6 +387,16 @@ class BlammoBot(BaseBot):
                 record.add_guess_string(TRIVIA_QID, msg.content)
                 record.add_guess_similarity(TRIVIA_QID, similarity)
                 record.write(TRIVIA_QID)
+                
+                # >>> completed game tracking for reports <<<
+                BlammoBot.last_completed_trivia = {
+                    'qid': TRIVIA_QID,
+                    'question': questions[0],
+                    'answer': questions[1],
+                    'round_ended_timestamp': datetime.datetime.now()
+                }
+                logger.debug(f"Set last_completed_trivia: {BlammoBot.last_completed_trivia}")
+                
                 TRIVIA_QID = ""
 
             elif similarity >= 0.82 and len(msg.content) < 250:
@@ -391,9 +420,11 @@ class BlammoBot(BaseBot):
                 points.add_points(msg.author, 10)
 
                 # >>> record section <<<
-                scramble_delta = datetime.datetime.now() - timestamps.read(
-                    "scramble_started"
-                )
+                scramble_start = timestamps.read("scramble_started")
+                if scramble_start:
+                    scramble_delta = datetime.datetime.now() - scramble_start
+                else:
+                    scramble_delta = datetime.timedelta(seconds=0)
                 record.add_time_elapsed(SCRAMBLE_QID, scramble_delta.total_seconds())
                 record.add_outcome(SCRAMBLE_QID, "solved")
                 record.add_username(SCRAMBLE_QID, msg.author)
@@ -405,6 +436,15 @@ class BlammoBot(BaseBot):
                     SCRAMBLE_QID, 1
                 )  # similarity always 1 for correct scramble
                 record.write(SCRAMBLE_QID)
+                
+                # >>> completed game tracking for reports <<<
+                BlammoBot.last_completed_scramble = {
+                    'qid': SCRAMBLE_QID,
+                    'word': scramble_word[0],  # scrambled word
+                    'answer': scramble_word[1],  # unscrambled word
+                    'round_ended_timestamp': datetime.datetime.now()
+                }
+                
                 SCRAMBLE_QID = ""
 
     @Command(
@@ -437,27 +477,42 @@ class BlammoBot(BaseBot):
         TRIVIA_COOLDOWN: int = silent_cooldown["trivia"]
         TRIVIA_HINT_TIME: int = 20
         TRIVIA_TIMEOUT: int = 30
+        
+        logger.debug(f"🔍 Trivia cooldown: {TRIVIA_COOLDOWN}s, trivia_started: {trivia_started}")
 
         if restart_scheduled:
-            logger.debug(f"Trivia command blocked -- restart scheduled.")
+            logger.debug(f"❌ Trivia command blocked -- restart scheduled.")
             return
 
         if shutdown_scheduled:
-            logger.debug(f"Trivia command blocked -- shutdown scheduled.")
+            logger.debug(f"❌ Trivia command blocked -- shutdown scheduled.")
             return
 
-        delta = datetime.datetime.now() - timestamps.read("trivia_started")
+        try:
+            trivia_start_time = timestamps.read("trivia_started")
+            if trivia_start_time:
+                delta = datetime.datetime.now() - trivia_start_time
+                logger.debug(f"⏰ Time since last trivia: {delta.total_seconds()}s")
+            else:
+                delta = datetime.timedelta(seconds=0)
+                logger.debug("⏰ No previous trivia start time found")
+        except Exception as e:
+            logger.error(f"❌ Error reading trivia_started timestamp: {e}")
+            delta = datetime.timedelta(hours=1)  # Default to allow trivia
+            
         # do not reply if since since command activated is less than 5 seconds
         if trivia_started and delta > datetime.timedelta(seconds=5):
+            logger.debug(f"❌ Trivia already running, telling user")
             await msg.reply(f"[Trivia] @{msg.author} Trivia already running.")
             return
         elif trivia_started and delta <= datetime.timedelta(seconds=5):
+            logger.debug(f"❌ Trivia already running, silent return")
             return
 
         # delta is time since last trivia question
         in_cooldown = delta < datetime.timedelta(seconds=TRIVIA_COOLDOWN)
         if in_cooldown:
-            logger.debug(f"Trivia command blocked -- in silent cooldown.")
+            logger.debug(f"❌ Trivia command blocked -- in silent cooldown.")
             return
 
         # delta_auto_write = datetime.datetime.now() - timestamps.read('last_auto_record_write')
@@ -469,17 +524,38 @@ class BlammoBot(BaseBot):
         #     await msg.reply(f"ROFL https://imgur.com/a/e3KWpYW", as_twitch_reply=True)
         #     return
 
+        logger.debug("✅ Passed all checks, starting trivia game...")
         trivia_started = True
 
-        questions = trivia.question()
-        question, answer, TRIVIA_QID = questions
+        try:
+            logger.debug("📚 Calling trivia.question()...")
+            questions = trivia.question()
+            logger.debug(f"📝 Got questions result: {questions}")
+            
+            if questions is None:
+                logger.error("❌ trivia.question() returned None!")
+                trivia_started = False
+                await msg.reply(f"[Trivia] @{msg.author} Error loading trivia question")
+                return
+                
+            question, answer, TRIVIA_QID = questions
+            logger.info(f"✅ Successfully loaded: Q='{question}' A='{answer}' QID='{TRIVIA_QID}'")
+            
+        except Exception as e:
+            logger.error(f"❌ Exception in trivia.question(): {e}")
+            trivia_started = False
+            await msg.reply(f"[Trivia] @{msg.author} Error starting trivia: {e}")
+            return
+            
         question_stylized = f"Chatting [Trivia] {question} Gayge HYPERCLAP"
 
         # >>> record section <<<
+        logger.debug("📝 Creating record entry...")
         record.new(TRIVIA_QID)
         record.add_question_string(TRIVIA_QID, question)
         record.add_answer_string(TRIVIA_QID, answer)
 
+        logger.info("🚀 Sending trivia question to chat...")
         await msg.reply(question_stylized)
         timestamps.update("trivia_started")
         logger.info(f"Trivia Question: {question}")
@@ -506,6 +582,16 @@ class BlammoBot(BaseBot):
                 logger.debug("Wrote trivia record")
                 logger.debug(f"TRIVIA_QID: {TRIVIA_QID}")
                 logger.debug(f"t: {t}")
+                
+                # >>> completed game tracking for reports <<<
+                BlammoBot.last_completed_trivia = {
+                    'qid': TRIVIA_QID,
+                    'question': questions[0],
+                    'answer': questions[1],
+                    'round_ended_timestamp': datetime.datetime.now()
+                }
+                logger.debug(f"Set last_completed_trivia: {BlammoBot.last_completed_trivia}")
+                
                 TRIVIA_QID = ""
                 logger.debug("Reset TRIVIA_QID")
 
@@ -549,7 +635,11 @@ class BlammoBot(BaseBot):
             return
 
         # delta is time since last scramble
-        delta = datetime.datetime.now() - timestamps.read("scramble_started")
+        scramble_start_time = timestamps.read("scramble_started")
+        if scramble_start_time:
+            delta = datetime.datetime.now() - scramble_start_time
+        else:
+            delta = datetime.timedelta(seconds=0)
         # if scramble started and it's been long enough after it's started, remind.
         if scramble_started and delta > datetime.timedelta(seconds=QUIET_REMIND_TIME):
             await msg.reply(f"[Scramble] @{msg.author} Scramble already running.")
@@ -609,6 +699,15 @@ since new scramble round started."
                 # >>> record section <<<
                 record.add_outcome(SCRAMBLE_QID, "timeout")
                 record.write(SCRAMBLE_QID)
+                
+                # >>> completed game tracking for reports <<<
+                BlammoBot.last_completed_scramble = {
+                    'qid': SCRAMBLE_QID,
+                    'word': scramble_puzzle,  # scrambled word
+                    'answer': scramble_answer,  # unscrambled word
+                    'round_ended_timestamp': datetime.datetime.now()
+                }
+                
                 SCRAMBLE_QID = ""
                 scramble_started = False
                 return  # TODO: is break or return better here?
@@ -712,7 +811,11 @@ since new scramble round started."
         ROULETTE_COOLDOWN: int = 5
 
         # time since roulette cmd last run
-        delta = datetime.datetime.now() - timestamps.read("roulette_cmd")
+        roulette_start_time = timestamps.read("roulette_cmd")
+        if roulette_start_time:
+            delta = datetime.datetime.now() - roulette_start_time
+        else:
+            delta = datetime.timedelta(hours=1)  # Allow roulette if no previous time
         if delta <= datetime.timedelta(seconds=ROULETTE_COOLDOWN):
             logger.debug("Roulette command blocked -- in silent cooldown.")
             return
@@ -1735,6 +1838,54 @@ since new scramble round started."
 
         logger.debug(f"wa command out: {out}")
         await msg.reply("[WA] " + out, as_twitch_reply=True)
+
+    @Command(
+        "report",
+        help="Report the last completed trivia or scramble game",
+        syntax="#report <trivia|scramble> <reason>",
+        cooldown=30
+    )
+    async def cmd_report(msg: Message):
+        logger.info(f"{msg.author} ran #report command: {msg.content}")
+        logger.debug(f"last_completed_trivia: {BlammoBot.last_completed_trivia}")
+        logger.debug(f"last_completed_scramble: {BlammoBot.last_completed_scramble}")
+        
+        # Parse command arguments
+        args = msg.content.split(" ", 2)  # Split into max 3 parts: #report, subcommand, reason
+        
+        if len(args) < 3:
+            await msg.reply(
+                f"@{msg.author} Usage: #report <trivia|scramble> <reason>",
+                as_twitch_reply=True
+            )
+            return
+            
+        subcommand = args[1].lower()
+        reason = args[2]
+        
+        # Validate subcommand
+        if subcommand not in ['trivia', 'scramble']:
+            await msg.reply(
+                f"@{msg.author} Invalid game type. Use 'trivia' or 'scramble'",
+                as_twitch_reply=True
+            )
+            return
+        
+        # Get the appropriate completed game
+        if subcommand == 'trivia':
+            completed_game = BlammoBot.last_completed_trivia
+        else:  # scramble
+            completed_game = BlammoBot.last_completed_scramble
+        
+        # Submit the report
+        success, message = report.submit_report(msg.author, subcommand, completed_game, reason)
+        
+        if success:
+            await msg.reply(f"@{msg.author} {message}", as_twitch_reply=True)
+            logger.info(f"Report submitted by {msg.author}: {subcommand} - {reason}")
+        else:
+            await msg.reply(f"@{msg.author} {message}", as_twitch_reply=True)
+            logger.warning(f"Report failed from {msg.author}: {message}")
 
 
 if __name__ == "__main__":

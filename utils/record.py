@@ -1,5 +1,6 @@
 import logging, random, os, sys, time, datetime
 import pandas as pd
+from utils.dbutils import ensure_file_ends_with_newline
 
 from log.loggers.custom_format import CustomFormatter  # for level colors
 
@@ -101,19 +102,6 @@ class Record:
         else:
             self.buffer = pd.concat([self.buffer, df], ignore_index=True)
 
-    def _ensure_file_ends_with_newline(self, file_path: str) -> None:
-        # Check if file exists and doesn't end with newline, add one
-        if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
-            try:
-                with open(file_path, 'rb') as f:
-                    f.seek(-1, 2)  # Go to last byte
-                    last_byte = f.read(1)
-                    if last_byte != b'\n':
-                        logger.debug(f"File {file_path} doesn't end with newline, adding one")
-                        with open(file_path, 'a') as append_file:
-                            append_file.write('\n')
-            except Exception as e:
-                logger.warning(f"Could not check/fix newline in {file_path}: {e}")
 
     def _pop_to_file(self, qid: str) -> None:
         # pop the row with the given qid from the buffer dataframe
@@ -136,7 +124,7 @@ class Record:
                 df_row = pd.DataFrame(buffer_row).T
                 logger.debug(f"Put buffer row in dataframe")
                 # Ensure file ends with newline before appending
-                self._ensure_file_ends_with_newline(self.path)
+                ensure_file_ends_with_newline(self.path)
                 df_row.to_csv(self.path, index=False, header=False, mode="a", lineterminator='\n')
                 logger.debug(f"Successfully saved buffer row {row} to csv.")
                 self.buffer.drop(row, inplace=True)

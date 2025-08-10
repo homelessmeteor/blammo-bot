@@ -8,6 +8,7 @@ Provides comprehensive health checks for all BlammoBot CSV databases:
 - User data database
 - Timestamps database
 - Submissions database
+- Game reports database
 
 Detects issues like merge conflicts, duplicates, and data corruption.
 """
@@ -86,7 +87,8 @@ class DatabaseHealthChecker:
             'user_data': os.path.join(private_data_path, 'user_data.csv'),
             'timestamps': os.path.join(private_data_path, 'timestamps.csv'),
             'submissions': os.path.join(private_data_path, 'submissions.csv'),
-            'record_data': os.path.join(private_data_path, 'record_data.csv')
+            'record_data': os.path.join(private_data_path, 'record_data.csv'),
+            'game_reports': os.path.join(private_data_path, 'game_reports.csv')
         }
     
     def check_all_databases(self) -> List[DatabaseHealthIssue]:
@@ -631,6 +633,8 @@ class DatabaseHealthChecker:
                 self._check_scramble_integrity(df, db_name)
             elif db_name == 'user_data':
                 self._check_user_data_integrity(df, db_name)
+            elif db_name == 'game_reports':
+                self._check_game_reports_integrity(df, db_name)
                 
         except Exception as e:
             self.issues.append(DatabaseHealthIssue(
@@ -702,6 +706,79 @@ class DatabaseHealthChecker:
         
         # Check for empty usernames
         self._check_empty_values(df, db_name, 'username', 'Empty username found', 'critical')
+    
+    def _check_game_reports_integrity(self, df: pd.DataFrame, db_name: str):
+        """Check game reports database integrity"""
+        required_columns = [
+            'report_id', 'game_type', 'qid', 'question_text', 'answer_text',
+            'reporting_user', 'report_reason', 'report_timestamp', 'round_ended_timestamp'
+        ]
+        missing_columns = [col for col in required_columns if col not in df.columns]
+        
+        if missing_columns:
+            self.issues.append(DatabaseHealthIssue(
+                database=db_name,
+                issue_type='schema_error', 
+                severity='critical',
+                description=f"Missing required columns: {missing_columns}"
+            ))
+            
+        if df.empty:
+            return
+            
+        # Check for empty report IDs
+        if 'report_id' in df.columns:
+            empty_report_ids = df[df['report_id'].isna() | (df['report_id'] == '')]
+            if not empty_report_ids.empty:
+                self.issues.append(DatabaseHealthIssue(
+                    database=db_name,
+                    issue_type='missing_data',
+                    severity='critical', 
+                    description=f"Found {len(empty_report_ids)} empty report IDs"
+                ))
+        
+        # Check for invalid game types
+        if 'game_type' in df.columns:
+            valid_game_types = {'trivia', 'scramble'}
+            invalid_types = df[~df['game_type'].isin(valid_game_types)]
+            if not invalid_types.empty:
+                for idx, row in invalid_types.iterrows():
+                    self.issues.append(DatabaseHealthIssue(
+                        database=db_name,
+                        issue_type='data_validation',
+                        severity='warning',
+                        description=f"Invalid game type: {row['game_type']}",
+                        affected_data=row.to_dict(),
+                        line_number=idx + 2
+                    ))
+        
+        # Check for empty usernames
+        if 'reporting_user' in df.columns:
+            empty_users = df[df['reporting_user'].isna() | (df['reporting_user'] == '')]
+            if not empty_users.empty:
+                for idx, row in empty_users.iterrows():
+                    self.issues.append(DatabaseHealthIssue(
+                        database=db_name,
+                        issue_type='missing_data',
+                        severity='critical',
+                        description=f"Empty reporting user found",
+                        affected_data=row.to_dict(),
+                        line_number=idx + 2
+                    ))
+        
+        # Check for empty report reasons
+        if 'report_reason' in df.columns:
+            empty_reasons = df[df['report_reason'].isna() | (df['report_reason'] == '')]
+            if not empty_reasons.empty:
+                for idx, row in empty_reasons.iterrows():
+                    self.issues.append(DatabaseHealthIssue(
+                        database=db_name,
+                        issue_type='missing_data',
+                        severity='warning',
+                        description=f"Empty report reason found",
+                        affected_data=row.to_dict(),
+                        line_number=idx + 2
+                    ))
     
     def _check_file_permissions(self, db_name: str, db_path: str):
         """Check file permissions"""

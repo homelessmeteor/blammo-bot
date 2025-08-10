@@ -2,6 +2,7 @@ import logging, os, sys, asyncio, re, time, datetime, csv
 from twitchbot.message import Message
 
 from log.loggers.custom_format import CustomFormatter  # for level colors
+from utils.dbutils import ensure_file_ends_with_newline
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -257,20 +258,6 @@ async def _check_scramble_duplicate(word: str):
         return True  # Allow submission on error to avoid blocking users
 
 
-def _ensure_file_ends_with_newline(file_path: str) -> None:
-    # Check if file exists and doesn't end with newline, add one
-    if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
-        try:
-            with open(file_path, 'rb') as f:
-                f.seek(-1, 2)  # Go to last byte
-                last_byte = f.read(1)
-                if last_byte != b'\n':
-                    logger.debug(f"File {file_path} doesn't end with newline, adding one")
-                    with open(file_path, 'a') as append_file:
-                        append_file.write('\n')
-        except Exception as e:
-            logger.warning(f"Could not check/fix newline in {file_path}: {e}")
-
 
 async def _write_dict_to_csv(d: dict):
     # write a dictionary to a csv file
@@ -288,7 +275,7 @@ async def _write_dict_to_csv(d: dict):
     # now, write the dictionary to the csv file
     try:
         # Ensure file ends with newline before appending
-        _ensure_file_ends_with_newline(SUBMISSION_FNAME)
+        ensure_file_ends_with_newline(SUBMISSION_FNAME)
         # with open(SUBMISSION_FNAME, 'a') as f:
         #     f.write(f'"{d["username"]}","{d["question"]}","{d["answer"]}","{d["raw"]}","{d["timestamp"]}"\n')
         # use csv module instead of writing to file directly

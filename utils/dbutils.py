@@ -38,6 +38,26 @@ def _load_csv(path: str):
     return df
 
 
+def ensure_file_ends_with_newline(file_path: str) -> None:
+    """
+    Ensure file ends with newline to prevent CSV corruption.
+    
+    Args:
+        file_path (str): Path to the file to check
+    """
+    if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+        try:
+            with open(file_path, 'rb') as f:
+                f.seek(-1, 2)  # Go to last byte
+                last_byte = f.read(1)
+                if last_byte != b'\n':
+                    logger.debug(f"File {file_path} doesn't end with newline, adding one")
+                    with open(file_path, 'a') as append_file:
+                        append_file.write('\n')
+        except Exception as e:
+            logger.warning(f"Could not check/fix newline in {file_path}: {e}")
+
+
 def _save_csv(df: pd.DataFrame, path: str):
     df.to_csv(path, index=False, lineterminator='\n')
 
