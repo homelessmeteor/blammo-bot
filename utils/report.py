@@ -168,6 +168,115 @@ class GameReporter:
         except Exception as e:
             logger.error(f"Error writing report to CSV: {e}")
             return False, "monkaS Failed to submit report. Please try again later"
+    
+    def submit_report_by_id(self, username: str, game_id: str, reason: str) -> tuple[bool, str]:
+        """Submit a report by looking up game data from record_data.csv"""
+        
+        # Check cooldown
+        if self._is_user_on_cooldown(username):
+            time_left = self.cooldown_seconds - (datetime.datetime.now() - self.report_cooldown[username]).total_seconds()
+            return False, f"Latege You're on cooldown"
+        
+        # Validate reason
+        reason_valid, reason_result = self._validate_reason(reason)
+        if not reason_valid:
+            return False, reason_result
+        reason = reason_result
+        
+        # Look up game data from record_data.csv
+        game_data = self._lookup_game_by_id(game_id)
+        if not game_data:
+            return False, f"NOPERS Game ID {game_id} not found or too old to report"
+        
+        # Check for duplicate report
+        is_duplicate, duplicate_error = self._check_duplicate_report(username, game_id)
+        if is_duplicate:
+            return False, duplicate_error
+        
+        # Generate report data
+        report_id = self._generate_report_id()
+        report_timestamp = datetime.datetime.now().isoformat()
+        
+        # Write to CSV
+        try:
+            # Ensure file ends with newline before appending
+            ensure_file_ends_with_newline(self.csv_path)
+            with open(self.csv_path, 'a', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                writer.writerow([
+                    report_id,
+                    game_data['game_type'],
+                    game_id,
+                    game_data['question_string'],
+                    game_data['answer_string'],
+                    username,
+                    reason,
+                    report_timestamp,
+                    game_data['timestamp']
+                ])
+                
+            # Update cooldown
+            self.report_cooldown[username] = datetime.datetime.now()
+            
+            logger.info(f"Report submitted by ID: {username} reported {game_data['game_type']} {game_id} - {reason}")
+            return True, f"OKAY Report submitted successfully for game {game_id}"
+            
+        except Exception as e:
+            logger.error(f"Error writing report to CSV: {e}")
+            return False, "monkaS Failed to submit report. Please try again later"
+    
+    def _lookup_game_by_id(self, game_id: str) -> dict:
+        """Look up game data from record_data.csv by game ID"""
+        record_data_path = "../blammo-bot-private/record_data.csv"
+        
+        if not os.path.exists(record_data_path):
+            logger.error(f"Record data file not found: {record_data_path}")
+            return None
+        
+        try:
+            import pandas as pd
+            # Try different encodings
+            for encoding in ['utf-8', 'latin-1', 'cp1252']:
+                try:
+                    df = pd.read_csv(record_data_path, encoding=encoding)
+                    break
+                except UnicodeDecodeError:
+                    continue
+            else:
+                logger.error(f"Could not read {record_data_path} with any encoding")
+                return None
+            
+            # Find the game by QID
+            game_rows = df[df['qid'] == game_id]
+            if game_rows.empty:
+                logger.debug(f"Game ID {game_id} not found in record data")
+                return None
+            
+            # Get the most recent entry for this game ID
+            game_row = game_rows.iloc[-1]
+            
+            # Check if game is recent enough to report (within report window)
+            try:
+                game_timestamp = datetime.datetime.fromtimestamp(float(game_row['timestamp']))
+                time_since_game = datetime.datetime.now() - game_timestamp
+                if time_since_game.total_seconds() > (self.report_window_minutes * 60):
+                    logger.debug(f"Game {game_id} is too old to report ({time_since_game})")
+                    return None
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Could not parse timestamp for game {game_id}: {e}")
+                return None
+            
+            # Return game data
+            return {
+                'game_type': game_row['game_type'],
+                'question_string': game_row.get('question_string', ''),
+                'answer_string': game_row.get('answer_string', ''),
+                'timestamp': datetime.datetime.fromtimestamp(float(game_row['timestamp'])).isoformat()
+            }
+            
+        except Exception as e:
+            logger.error(f"Error looking up game {game_id}: {e}")
+            return None
 
 # Global instance
 game_reporter = GameReporter()
@@ -175,3 +284,7 @@ game_reporter = GameReporter()
 def submit_report(username: str, game_type: str, completed_game: dict, reason: str) -> tuple[bool, str]:
     """Convenience function for submitting reports"""
     return game_reporter.submit_report(username, game_type, completed_game, reason)
+
+def submit_report_by_id(username: str, game_id: str, reason: str) -> tuple[bool, str]:
+    """Convenience function for submitting reports by game ID"""
+    return game_reporter.submit_report_by_id(username, game_id, reason)

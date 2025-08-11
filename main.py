@@ -547,7 +547,7 @@ class BlammoBot(BaseBot):
             await msg.reply(f"[Trivia] @{msg.author} Error starting trivia: {e}")
             return
             
-        question_stylized = f"Chatting [Trivia] {question} Gayge HYPERCLAP"
+        question_stylized = f"Chatting [Trivia] ({TRIVIA_QID}) {question} Gayge HYPERCLAP"
 
         # >>> record section <<<
         logger.debug("📝 Creating record entry...")
@@ -672,7 +672,7 @@ since new scramble round started."
             scramble.get_word()
         )  # tuple of (scrambled word, UNscrambled word)
         scramble_puzzle, scramble_answer, SCRAMBLE_QID = scramble_word
-        puzzle_stylized = f"[Scramble] A scramble game has started. Unscramble the following word to win: {scramble_puzzle} Transge HYPERCLAP"
+        puzzle_stylized = f"[Scramble] ({SCRAMBLE_QID}) A scramble game has started. Unscramble the following word to win: {scramble_puzzle} Transge HYPERCLAP"
 
         scramble_question = scramble_puzzle
 
@@ -1841,48 +1841,58 @@ since new scramble round started."
 
     @Command(
         "report",
-        help="Report the last completed trivia or scramble game",
-        syntax="#report <trivia|scramble> <reason>",
+        help="Report a trivia or scramble game by ID or last completed",
+        syntax="#report <game_id> <reason> OR #report <trivia|scramble> <reason>",
         cooldown=30
     )
     async def cmd_report(msg: Message):
         logger.info(f"{msg.author} ran #report command: {msg.content}")
-        logger.debug(f"last_completed_trivia: {BlammoBot.last_completed_trivia}")
-        logger.debug(f"last_completed_scramble: {BlammoBot.last_completed_scramble}")
         
         # Parse command arguments
-        args = msg.content.split(" ", 2)  # Split into max 3 parts: #report, subcommand, reason
+        args = msg.content.split(" ", 2)  # Split into max 3 parts: #report, id_or_type, reason
         
         if len(args) < 3:
             await msg.reply(
-                f"@{msg.author} Usage: #report <trivia|scramble> <reason>",
+                f"@{msg.author} Usage: #report <game_id> <reason> OR #report <trivia|scramble> <reason>",
                 as_twitch_reply=True
             )
             return
             
-        subcommand = args[1].lower()
+        id_or_type = args[1].lower()
         reason = args[2]
         
-        # Validate subcommand
-        if subcommand not in ['trivia', 'scramble']:
+        # Check if first argument is a game ID (starts with t or s followed by digits)
+        if id_or_type.startswith(('t', 's')) and len(id_or_type) > 1 and id_or_type[1:].isdigit():
+            # This is a game ID
+            game_id = id_or_type
+            logger.debug(f"Reporting by game ID: {game_id}")
+            
+            # Submit the report with game ID
+            success, message = report.submit_report_by_id(msg.author, game_id, reason)
+            
+        elif id_or_type in ['trivia', 'scramble']:
+            # This is the old format - use last completed game
+            logger.debug(f"Reporting last completed {id_or_type} game")
+            
+            # Get the appropriate completed game
+            if id_or_type == 'trivia':
+                completed_game = BlammoBot.last_completed_trivia
+            else:  # scramble
+                completed_game = BlammoBot.last_completed_scramble
+            
+            # Submit the report with completed game data
+            success, message = report.submit_report(msg.author, id_or_type, completed_game, reason)
+            
+        else:
             await msg.reply(
-                f"@{msg.author} Invalid game type. Use 'trivia' or 'scramble'",
+                f"@{msg.author} Invalid format. Use game ID (like t1234567890) or 'trivia'/'scramble'",
                 as_twitch_reply=True
             )
             return
         
-        # Get the appropriate completed game
-        if subcommand == 'trivia':
-            completed_game = BlammoBot.last_completed_trivia
-        else:  # scramble
-            completed_game = BlammoBot.last_completed_scramble
-        
-        # Submit the report
-        success, message = report.submit_report(msg.author, subcommand, completed_game, reason)
-        
         if success:
             await msg.reply(f"@{msg.author} {message}", as_twitch_reply=True)
-            logger.info(f"Report submitted by {msg.author}: {subcommand} - {reason}")
+            logger.info(f"Report submitted by {msg.author}: {id_or_type} - {reason}")
         else:
             await msg.reply(f"@{msg.author} {message}", as_twitch_reply=True)
             logger.warning(f"Report failed from {msg.author}: {message}")
