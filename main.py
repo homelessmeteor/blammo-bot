@@ -415,7 +415,7 @@ class BlammoBot(BaseBot):
                 # logger.debug(f'scramble solution found from {msg.author}')
                 # logger.debug(f'scramble solution: {scramble_word[1]}')
                 await msg.reply(
-                    f'[Scramble] @{msg.author} You answered the question correctly and got 10 points. Transge TeaTime The word was " {scramble_word[1]} "'
+                    f'[Scramble] @{msg.author} You answered the question correctly and got 10 points. Transge TeaTime The word was " {scramble_word[1].lower()} "'
                 )
                 points.add_points(msg.author, 10)
 
@@ -672,7 +672,7 @@ since new scramble round started."
             scramble.get_word()
         )  # tuple of (scrambled word, UNscrambled word)
         scramble_puzzle, scramble_answer, SCRAMBLE_QID = scramble_word
-        puzzle_stylized = f"[Scramble] ({SCRAMBLE_QID}) A scramble game has started. Unscramble the following word to win: {scramble_puzzle} Transge HYPERCLAP"
+        puzzle_stylized = f"[Scramble] ({SCRAMBLE_QID}) A scramble game has started. Unscramble the following word to win: {scramble_puzzle.lower()} Transge HYPERCLAP"
 
         scramble_question = scramble_puzzle
 
@@ -691,10 +691,10 @@ since new scramble round started."
             await asyncio.sleep(1)
             if t == SCRAMBLE_HINT_TIME and scramble_started is True:
                 hint = scramble_answer[:3] + "_" * (len(scramble_answer) - 3)
-                await msg.reply(f"[Scramble] Hint: {hint}")
+                await msg.reply(f"[Scramble] Hint: {hint.lower()}")
             if t == SCRAMBLE_TIMEOUT and scramble_started is True:
                 await msg.reply(
-                    f'[Scramble] No one answered correctly. Madgay The word was: " {scramble_answer} "'
+                    f'[Scramble] No one answered correctly. Madgay The word was: " {scramble_answer.lower()} "'
                 )
                 # >>> record section <<<
                 record.add_outcome(SCRAMBLE_QID, "timeout")
