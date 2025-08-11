@@ -1907,7 +1907,38 @@ if __name__ == "__main__":
     # terminate blammobot loop when spam checker returns value
     # instantiate SpammoBot simultaneously
 
-    loop = asyncio.get_event_loop()
-    loop.create_task(check_online.check_loop())
-    loop.create_task(BlammoBot().run())
-    loop.run_forever()
+    bot_instance = None
+
+    try:
+        # Start check_online in a separate thread since bot will manage the main loop
+        import threading
+        def run_check_online():
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(check_online.check_loop())
+            except Exception as e:
+                logger.error(f"Critical error in check_online: {e}")
+                logger.error("Shutting down due to check_online failure...")
+                import os
+                os._exit(1)
+        
+        logger.info("Starting check_online task...")
+        check_thread = threading.Thread(target=run_check_online, daemon=True)
+        check_thread.start()
+        
+        logger.info("Starting BlammoBot...")
+        bot_instance = BlammoBot()
+        
+        # Let the bot manage its own event loop
+        bot_instance.run()
+        
+    except KeyboardInterrupt:
+        logger.info("🛑 KeyboardInterrupt received - shutting down...")
+    except SystemExit:
+        pass  # Normal exit
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+    
+    finally:
+        logger.info("👋 Bot shutdown complete")
