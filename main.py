@@ -14,7 +14,7 @@ import math
 from urllib.parse import urlencode, urlparse, urlunparse, urljoin
 from pathlib import Path
 from twitchbot import BaseBot
-from twitchbot import event_handler, Event, Command, Message, Channel, PollData, get_bot
+from twitchbot import event_handler, Event, Command, Message, Channel, get_bot
 from twitchbot.config import get_nick, get_oauth, get_client_id
 
 # from newsapi import NewsApiClient
@@ -37,6 +37,7 @@ from utils import submit
 from utils import secretcommand
 from utils.randommeal import get_meal
 from utils import report
+from utils.poll import PollData
 import check_online
 
 # TODO: Clean up import section
@@ -103,6 +104,7 @@ class BlammoBot(BaseBot):
     global scramble  # trivia equivalent: trivia
     global scramble_word  # trivia equivalent: questions  (scrambled, unscrambled)
     global scramble_started  # trivia equivalent: trivia_started
+    global poll
 
     questions = None
     trivia_started = False
@@ -130,6 +132,16 @@ class BlammoBot(BaseBot):
         ts = now.strftime("%Y-%m-%d %H:%M:%S")
         print("\x1B[3m" + ts + " " + msg + "\x1B[0m")
         # logger.log(11, msg)
+    
+    async def on_connected(self):
+        """Called when the bot connects - set up poll event loop."""
+        global poll
+        try:
+            main_loop = asyncio.get_running_loop()
+            poll.set_main_loop(main_loop)
+            logger.info("Set main event loop for poll timers")
+        except Exception as e:
+            logger.error(f"Error setting poll main loop: {e}")
 
     def _drop_stop(self):
         pass
@@ -262,6 +274,7 @@ class BlammoBot(BaseBot):
         global SCRAMBLE_QID
         global STREAM_ONLINE
         global REPLY_NEXT
+        global poll
 
         global trivia_started
         global questions
@@ -290,6 +303,11 @@ class BlammoBot(BaseBot):
                 f"Stream went offline at {datetime.datetime.now().isoformat()}. Bot awake."
             )
         self.stream_online_prev = self.stream_online
+
+        # Check for expired polls on every message
+        poll_result = poll.check_and_end_expired()
+        if poll_result:
+            await msg.reply(f"[Poll] {poll_result}", as_twitch_reply=True)
 
         if not self.stream_online or not self.stream_online_prev:
             self.logmsg(f"Chat #{msg.channel.name} ({msg.author}) {msg.content}")
@@ -1897,6 +1915,236 @@ since new scramble round started."
             await msg.reply(f"@{msg.author} {message}", as_twitch_reply=True)
             logger.warning(f"Report failed from {msg.author}: {message}")
 
+    @Command(
+        "poll",
+        help="Manage polls: start, stop, extend, results",
+        syntax="#poll <start|stop|extend|results> [args]",
+        permission="mod"
+    )
+    async def cmd_poll(msg: Message):
+        global poll
+        logger.info(f"{msg.author} ran #poll command: {msg.content}")
+        
+        args = msg.content.split(" ", 2)
+        
+        if len(args) < 2:
+            await msg.reply(
+                f"@{msg.author} Usage: #poll <start|stop|extend|results> [args]",
+                as_twitch_reply=True
+            )
+            return
+        
+        subcommand = args[1].lower()
+        
+        if subcommand == "start":
+            if len(args) < 3:
+                await msg.reply(
+                    f"@{msg.author} Usage: #poll start <duration> <question> | <option1> | <option2> | ...",
+                    as_twitch_reply=True
+                )
+                return
+            
+            # Parse duration and question/options
+            content_parts = args[2].split(" ", 1)
+            if len(content_parts) < 2:
+                await msg.reply(
+                    f"@{msg.author} Usage: #poll start <duration> <question> | <option1> | <option2> | ...",
+                    as_twitch_reply=True
+                )
+                return
+            
+            duration = content_parts[0]
+            question_and_options = content_parts[1]
+            
+            # Split question and options by |
+            parts = [part.strip() for part in question_and_options.split("|")]
+            if len(parts) < 3:  # question + at least 2 options
+                await msg.reply(
+                    f"@{msg.author} Poll must have a question and at least 2 options separated by |",
+                    as_twitch_reply=True
+                )
+                return
+            
+            question = parts[0]
+            options = parts[1:]
+            
+            result = poll.start_poll(question, options, duration, msg.author, msg.channel.name)
+            await msg.reply(f"[Poll] {result}", as_twitch_reply=True)
+        
+        elif subcommand == "stop":
+            result = poll.stop_poll()
+            await msg.reply(f"[Poll] {result}", as_twitch_reply=True)
+        
+        elif subcommand == "extend":
+            if len(args) < 3:
+                await msg.reply(
+                    f"@{msg.author} Usage: #poll extend <duration>",
+                    as_twitch_reply=True
+                )
+                return
+            
+            duration = args[2]
+            result = poll.extend_poll(duration)
+            await msg.reply(f"[Poll] {result}", as_twitch_reply=True)
+        
+        elif subcommand == "results":
+            result = poll.get_results()
+            await msg.reply(f"[Poll] {result}", as_twitch_reply=True)
+        
+        else:
+            await msg.reply(
+                f"@{msg.author} Unknown subcommand. Use: start, stop, extend, results",
+                as_twitch_reply=True
+            )
+
+    @Command(
+        "pollvote",
+        help="Vote in an active poll",
+        syntax="#pollvote <option_number> or #pollvote <option_text>",
+        cooldown=5
+    )
+    async def cmd_pollvote(msg: Message):
+        global poll
+        logger.info(f"{msg.author} voted: {msg.content}")
+        
+        args = msg.content.split(" ", 1)
+        
+        if len(args) < 2:
+            await msg.reply(
+                f"@{msg.author} Usage: #pollvote <option_number> or #pollvote <option_text>",
+                as_twitch_reply=True
+            )
+            return
+        
+        vote_input = args[1]
+        result = poll.vote(msg.author, vote_input)
+        
+        # Only reply if there's an error message (non-empty result)
+        if result:
+            await msg.reply(f"[Poll] {result}", as_twitch_reply=True)
+
+    @Command(
+        "activepoll",
+        help="Show the current active poll",
+        cooldown=30
+    )
+    async def cmd_activepoll(msg: Message):
+        global poll
+        
+        if not poll.active:
+            await msg.reply("[Poll] No active poll", as_twitch_reply=True)
+            return
+        
+        # Get poll status and format it for display
+        if poll.is_expired():
+            await msg.reply("[Poll] Poll has ended but results not yet displayed", as_twitch_reply=True)
+            return
+        
+        # Show the poll question and options with time remaining
+        remaining = int((poll.end_time - datetime.datetime.now()).total_seconds())
+        remaining_display = poll._format_duration(remaining)
+        total_votes = len(poll.votes)
+        
+        options_text = "\n".join([f"{i+1}). {option}" for i, option in enumerate(poll.options)])
+        
+        poll_info = (f"NOTED Active poll by {poll.creator}: '{poll.question}'\n"
+                    f"{options_text}\n|| "
+                    f"Vote with #pollvote <number> or #pollvote <option>\n|| "
+                    f"Time remaining: {remaining_display} | Total votes: {total_votes}")
+        
+        await msg.reply(f"[Poll] {poll_info}", as_twitch_reply=True)
+
+
+# Initialize global poll instance
+poll = PollData()
+
+# Global variable to store bot instance for poll callbacks
+bot_instance = None
+
+async def poll_expired_callback(result_message):
+    """Callback function called when a poll expires via timer."""
+    global bot_instance, poll
+    logger.debug(f"Poll expired callback called with bot_instance: {bot_instance}")
+    
+    if bot_instance and poll.channel_name:
+        try:
+            channel_name = poll.channel_name
+            logger.debug(f"Sending poll expiration to channel: {channel_name}")
+            
+            # Debug: List available methods on bot instance
+            bot_methods = [method for method in dir(bot_instance) if not method.startswith('_')]
+            logger.debug(f"Available bot methods: {bot_methods}")
+            
+            # Try different methods to send message
+            if hasattr(bot_instance, 'get_channel'):
+                channel = bot_instance.get_channel(channel_name)
+                logger.debug(f"get_channel returned: {channel}")
+                if channel:
+                    channel_methods = [method for method in dir(channel) if not method.startswith('_')]
+                    logger.debug(f"Available channel methods: {channel_methods}")
+                    if hasattr(channel, 'send_message'):
+                        await channel.send_message(f"[Poll] {result_message}")
+                        logger.info(f"Poll auto-expired and results sent to {channel_name}")
+                        return
+            
+            # Alternative method - use bot's send method directly
+            if hasattr(bot_instance, 'send_privmsg'):
+                await bot_instance.send_privmsg(channel_name, f"[Poll] {result_message}")
+                logger.info(f"Poll auto-expired and results sent to {channel_name} via send_privmsg")
+                return
+            
+            # Try another method that might exist
+            if hasattr(bot_instance, 'send_message'):
+                await bot_instance.send_message(channel_name, f"[Poll] {result_message}")
+                logger.info(f"Poll auto-expired and results sent to {channel_name} via bot.send_message")
+                return
+            
+            # Try using the IRC connection directly
+            if hasattr(bot_instance, 'irc') and bot_instance.irc:
+                irc_methods = [method for method in dir(bot_instance.irc) if not method.startswith('_')]
+                logger.debug(f"Available IRC methods: {irc_methods}")
+                
+                # Try common IRC message sending methods
+                if hasattr(bot_instance.irc, 'send_privmsg'):
+                    await bot_instance.irc.send_privmsg(channel_name, f"[Poll] {result_message}")
+                    logger.info(f"Poll auto-expired and results sent to {channel_name} via irc.send_privmsg")
+                    return
+                elif hasattr(bot_instance.irc, 'privmsg'):
+                    await bot_instance.irc.privmsg(channel_name, f"[Poll] {result_message}")
+                    logger.info(f"Poll auto-expired and results sent to {channel_name} via irc.privmsg")
+                    return
+                elif hasattr(bot_instance.irc, 'send_message'):
+                    await bot_instance.irc.send_message(channel_name, f"[Poll] {result_message}")
+                    logger.info(f"Poll auto-expired and results sent to {channel_name} via irc.send_message")
+                    return
+                elif hasattr(bot_instance.irc, 'send'):
+                    await bot_instance.irc.send(f"PRIVMSG #{channel_name} :[Poll] {result_message}")
+                    logger.info(f"Poll auto-expired and results sent to {channel_name} via raw IRC send")
+                    return
+            
+            # Try methods that might exist for sending messages
+            for method_name in ['send', 'privmsg', 'message']:
+                if hasattr(bot_instance, method_name):
+                    method = getattr(bot_instance, method_name)
+                    try:
+                        await method(channel_name, f"[Poll] {result_message}")
+                        logger.info(f"Poll auto-expired and results sent to {channel_name} via {method_name}")
+                        return
+                    except Exception as e:
+                        logger.debug(f"Method {method_name} failed: {e}")
+                        continue
+                
+            logger.warning(f"Could not find method to send message to {channel_name}")
+        except Exception as e:
+            logger.error(f"Error sending poll expiration message: {e}")
+    else:
+        if not bot_instance:
+            logger.warning("Cannot send poll expiration message - bot instance not available")
+        else:
+            logger.warning("Cannot send poll expiration message - no channel name stored")
+
+# Set the callback for poll expiration
+poll.set_result_callback(poll_expired_callback)
 
 if __name__ == "__main__":
     logger.info("Starting bot...")
@@ -1929,6 +2177,15 @@ if __name__ == "__main__":
         
         logger.info("Starting BlammoBot...")
         bot_instance = BlammoBot()
+        
+        # Set the main event loop for poll callbacks
+        import asyncio
+        try:
+            main_loop = asyncio.get_running_loop()
+            poll.set_main_loop(main_loop)
+        except RuntimeError:
+            # No loop running yet, it will be set when the bot starts
+            pass
         
         # Let the bot manage its own event loop
         bot_instance.run()
