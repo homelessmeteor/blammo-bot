@@ -14,7 +14,7 @@ import math
 from urllib.parse import urlencode, urlparse, urlunparse, urljoin
 from pathlib import Path
 from twitchbot import BaseBot
-from twitchbot import event_handler, Event, Command, Message, Channel, PollData, get_bot
+from twitchbot import event_handler, Event, Command, Message, Channel, get_bot
 from twitchbot.config import get_nick, get_oauth, get_client_id
 
 # from newsapi import NewsApiClient
@@ -36,6 +36,8 @@ from utils.secrets import get_oauth, get_client_id, get_client_secret, get_wa_ap
 from utils import submit
 from utils import secretcommand
 from utils.randommeal import get_meal
+from utils import report
+from utils.poll import PollData
 import check_online
 
 # TODO: Clean up import section
@@ -71,6 +73,10 @@ CHANNEL_ONLINE_CHECK_INTERVAL = check_online.get_check_interval()
 
 class BlammoBot(BaseBot):
     logger.debug("BlammoBot class instantiated")
+    
+    # Class variables for completed game tracking
+    last_completed_trivia = None
+    last_completed_scramble = None
 
     global points
     global timestamps_dict  # used to track when the last time a command was used
@@ -98,6 +104,7 @@ class BlammoBot(BaseBot):
     global scramble  # trivia equivalent: trivia
     global scramble_word  # trivia equivalent: questions  (scrambled, unscrambled)
     global scramble_started  # trivia equivalent: trivia_started
+    global poll
 
     questions = None
     trivia_started = False
@@ -105,6 +112,7 @@ class BlammoBot(BaseBot):
     COMMAND_SHUTDOWN = False
     restart_scheduled = False
     shutdown_scheduled = False
+    stream_online_prev = False
     TRIVIA_QID = ""
     SCRAMBLE_QID = ""
     silent_cooldown = {
@@ -124,6 +132,16 @@ class BlammoBot(BaseBot):
         ts = now.strftime("%Y-%m-%d %H:%M:%S")
         print("\x1B[3m" + ts + " " + msg + "\x1B[0m")
         # logger.log(11, msg)
+    
+    async def on_connected(self):
+        """Called when the bot connects - set up poll event loop."""
+        global poll
+        try:
+            main_loop = asyncio.get_running_loop()
+            poll.set_main_loop(main_loop)
+            logger.info("Set main event loop for poll timers")
+        except Exception as e:
+            logger.error(f"Error setting poll main loop: {e}")
 
     def _drop_stop(self):
         pass
@@ -256,6 +274,7 @@ class BlammoBot(BaseBot):
         global SCRAMBLE_QID
         global STREAM_ONLINE
         global REPLY_NEXT
+        global poll
 
         global trivia_started
         global questions
@@ -284,6 +303,11 @@ class BlammoBot(BaseBot):
                 f"Stream went offline at {datetime.datetime.now().isoformat()}. Bot awake."
             )
         self.stream_online_prev = self.stream_online
+
+        # Check for expired polls on every message
+        poll_result = poll.check_and_end_expired()
+        if poll_result:
+            await msg.reply(f"[Poll] {poll_result}", as_twitch_reply=True)
 
         if not self.stream_online or not self.stream_online_prev:
             self.logmsg(f"Chat #{msg.channel.name} ({msg.author}) {msg.content}")
@@ -334,9 +358,11 @@ class BlammoBot(BaseBot):
 
                 # >>> record section <<<
                 logger.debug(f"[Trivia] Writing trivia record for {TRIVIA_QID}")
-                trivia_delta = datetime.datetime.now() - timestamps.read(
-                    "trivia_started"
-                )
+                trivia_start = timestamps.read("trivia_started")
+                if trivia_start:
+                    trivia_delta = datetime.datetime.now() - trivia_start
+                else:
+                    trivia_delta = datetime.timedelta(seconds=0)
                 record.add_time_elapsed(TRIVIA_QID, trivia_delta.total_seconds())
                 record.add_outcome(TRIVIA_QID, "solved")
                 record.add_username(TRIVIA_QID, msg.author)
@@ -344,6 +370,16 @@ class BlammoBot(BaseBot):
                 record.add_guess_string(TRIVIA_QID, msg.content)
                 record.add_guess_similarity(TRIVIA_QID, similarity)
                 record.write(TRIVIA_QID)
+                
+                # >>> completed game tracking for reports <<<
+                BlammoBot.last_completed_trivia = {
+                    'qid': TRIVIA_QID,
+                    'question': questions[0],
+                    'answer': questions[1],
+                    'round_ended_timestamp': datetime.datetime.now()
+                }
+                logger.debug(f"Set last_completed_trivia: {BlammoBot.last_completed_trivia}")
+                
                 TRIVIA_QID = ""
 
             elif similarity >= 0.75 and len(msg.content) < 250:
@@ -357,9 +393,11 @@ class BlammoBot(BaseBot):
 
                 # >>> record section <<<
                 logger.debug(f"[Trivia] Writing trivia record for {TRIVIA_QID}")
-                trivia_delta = datetime.datetime.now() - timestamps.read(
-                    "trivia_started"
-                )
+                trivia_start = timestamps.read("trivia_started")
+                if trivia_start:
+                    trivia_delta = datetime.datetime.now() - trivia_start
+                else:
+                    trivia_delta = datetime.timedelta(seconds=0)
                 record.add_time_elapsed(TRIVIA_QID, trivia_delta.total_seconds())
                 record.add_outcome(TRIVIA_QID, "solved")
                 record.add_username(TRIVIA_QID, msg.author)
@@ -367,6 +405,16 @@ class BlammoBot(BaseBot):
                 record.add_guess_string(TRIVIA_QID, msg.content)
                 record.add_guess_similarity(TRIVIA_QID, similarity)
                 record.write(TRIVIA_QID)
+                
+                # >>> completed game tracking for reports <<<
+                BlammoBot.last_completed_trivia = {
+                    'qid': TRIVIA_QID,
+                    'question': questions[0],
+                    'answer': questions[1],
+                    'round_ended_timestamp': datetime.datetime.now()
+                }
+                logger.debug(f"Set last_completed_trivia: {BlammoBot.last_completed_trivia}")
+                
                 TRIVIA_QID = ""
 
             elif similarity >= 0.82 and len(msg.content) < 250:
@@ -385,14 +433,16 @@ class BlammoBot(BaseBot):
                 # logger.debug(f'scramble solution found from {msg.author}')
                 # logger.debug(f'scramble solution: {scramble_word[1]}')
                 await msg.reply(
-                    f'[Scramble] @{msg.author} You answered the question correctly and got 10 points. Transge TeaTime The word was " {scramble_word[1]} "'
+                    f'[Scramble] @{msg.author} You answered the question correctly and got 10 points. Transge TeaTime The word was " {scramble_word[1].lower()} "'
                 )
                 points.add_points(msg.author, 10)
 
                 # >>> record section <<<
-                scramble_delta = datetime.datetime.now() - timestamps.read(
-                    "scramble_started"
-                )
+                scramble_start = timestamps.read("scramble_started")
+                if scramble_start:
+                    scramble_delta = datetime.datetime.now() - scramble_start
+                else:
+                    scramble_delta = datetime.timedelta(seconds=0)
                 record.add_time_elapsed(SCRAMBLE_QID, scramble_delta.total_seconds())
                 record.add_outcome(SCRAMBLE_QID, "solved")
                 record.add_username(SCRAMBLE_QID, msg.author)
@@ -404,6 +454,15 @@ class BlammoBot(BaseBot):
                     SCRAMBLE_QID, 1
                 )  # similarity always 1 for correct scramble
                 record.write(SCRAMBLE_QID)
+                
+                # >>> completed game tracking for reports <<<
+                BlammoBot.last_completed_scramble = {
+                    'qid': SCRAMBLE_QID,
+                    'word': scramble_word[0],  # scrambled word
+                    'answer': scramble_word[1],  # unscrambled word
+                    'round_ended_timestamp': datetime.datetime.now()
+                }
+                
                 SCRAMBLE_QID = ""
 
     @Command(
@@ -436,27 +495,42 @@ class BlammoBot(BaseBot):
         TRIVIA_COOLDOWN: int = silent_cooldown["trivia"]
         TRIVIA_HINT_TIME: int = 20
         TRIVIA_TIMEOUT: int = 30
+        
+        logger.debug(f"🔍 Trivia cooldown: {TRIVIA_COOLDOWN}s, trivia_started: {trivia_started}")
 
         if restart_scheduled:
-            logger.debug(f"Trivia command blocked -- restart scheduled.")
+            logger.debug(f"❌ Trivia command blocked -- restart scheduled.")
             return
 
         if shutdown_scheduled:
-            logger.debug(f"Trivia command blocked -- shutdown scheduled.")
+            logger.debug(f"❌ Trivia command blocked -- shutdown scheduled.")
             return
 
-        delta = datetime.datetime.now() - timestamps.read("trivia_started")
+        try:
+            trivia_start_time = timestamps.read("trivia_started")
+            if trivia_start_time:
+                delta = datetime.datetime.now() - trivia_start_time
+                logger.debug(f"⏰ Time since last trivia: {delta.total_seconds()}s")
+            else:
+                delta = datetime.timedelta(seconds=0)
+                logger.debug("⏰ No previous trivia start time found")
+        except Exception as e:
+            logger.error(f"❌ Error reading trivia_started timestamp: {e}")
+            delta = datetime.timedelta(hours=1)  # Default to allow trivia
+            
         # do not reply if since since command activated is less than 5 seconds
         if trivia_started and delta > datetime.timedelta(seconds=5):
+            logger.debug(f"❌ Trivia already running, telling user")
             await msg.reply(f"[Trivia] @{msg.author} Trivia already running.")
             return
         elif trivia_started and delta <= datetime.timedelta(seconds=5):
+            logger.debug(f"❌ Trivia already running, silent return")
             return
 
         # delta is time since last trivia question
         in_cooldown = delta < datetime.timedelta(seconds=TRIVIA_COOLDOWN)
         if in_cooldown:
-            logger.debug(f"Trivia command blocked -- in silent cooldown.")
+            logger.debug(f"❌ Trivia command blocked -- in silent cooldown.")
             return
 
         # delta_auto_write = datetime.datetime.now() - timestamps.read('last_auto_record_write')
@@ -468,17 +542,38 @@ class BlammoBot(BaseBot):
         #     await msg.reply(f"ROFL https://imgur.com/a/e3KWpYW", as_twitch_reply=True)
         #     return
 
+        logger.debug("✅ Passed all checks, starting trivia game...")
         trivia_started = True
 
-        questions = trivia.question()
-        question, answer, TRIVIA_QID = questions
-        question_stylized = f"Chatting [Trivia] {question} Gayge HYPERCLAP"
+        try:
+            logger.debug("📚 Calling trivia.question()...")
+            questions = trivia.question()
+            logger.debug(f"📝 Got questions result: {questions}")
+            
+            if questions is None:
+                logger.error("❌ trivia.question() returned None!")
+                trivia_started = False
+                await msg.reply(f"[Trivia] @{msg.author} Error loading trivia question")
+                return
+                
+            question, answer, TRIVIA_QID = questions
+            logger.info(f"✅ Successfully loaded: Q='{question}' A='{answer}' QID='{TRIVIA_QID}'")
+            
+        except Exception as e:
+            logger.error(f"❌ Exception in trivia.question(): {e}")
+            trivia_started = False
+            await msg.reply(f"[Trivia] @{msg.author} Error starting trivia: {e}")
+            return
+            
+        question_stylized = f"Chatting [Trivia] ({TRIVIA_QID}) {question} Gayge HYPERCLAP"
 
         # >>> record section <<<
+        logger.debug("📝 Creating record entry...")
         record.new(TRIVIA_QID)
         record.add_question_string(TRIVIA_QID, question)
         record.add_answer_string(TRIVIA_QID, answer)
 
+        logger.info("🚀 Sending trivia question to chat...")
         await msg.reply(question_stylized)
         timestamps.update("trivia_started")
         logger.info(f"Trivia Question: {question}")
@@ -505,6 +600,16 @@ class BlammoBot(BaseBot):
                 logger.debug("Wrote trivia record")
                 logger.debug(f"TRIVIA_QID: {TRIVIA_QID}")
                 logger.debug(f"t: {t}")
+                
+                # >>> completed game tracking for reports <<<
+                BlammoBot.last_completed_trivia = {
+                    'qid': TRIVIA_QID,
+                    'question': questions[0],
+                    'answer': questions[1],
+                    'round_ended_timestamp': datetime.datetime.now()
+                }
+                logger.debug(f"Set last_completed_trivia: {BlammoBot.last_completed_trivia}")
+                
                 TRIVIA_QID = ""
                 logger.debug("Reset TRIVIA_QID")
 
@@ -548,7 +653,11 @@ class BlammoBot(BaseBot):
             return
 
         # delta is time since last scramble
-        delta = datetime.datetime.now() - timestamps.read("scramble_started")
+        scramble_start_time = timestamps.read("scramble_started")
+        if scramble_start_time:
+            delta = datetime.datetime.now() - scramble_start_time
+        else:
+            delta = datetime.timedelta(seconds=0)
         # if scramble started and it's been long enough after it's started, remind.
         if scramble_started and delta > datetime.timedelta(seconds=QUIET_REMIND_TIME):
             await msg.reply(f"[Scramble] @{msg.author} Scramble already running.")
@@ -581,7 +690,7 @@ since new scramble round started."
             scramble.get_word()
         )  # tuple of (scrambled word, UNscrambled word)
         scramble_puzzle, scramble_answer, SCRAMBLE_QID = scramble_word
-        puzzle_stylized = f"[Scramble] A scramble game has started. Unscramble the following word to win: {scramble_puzzle} Transge HYPERCLAP"
+        puzzle_stylized = f"[Scramble] ({SCRAMBLE_QID}) A scramble game has started. Unscramble the following word to win: {scramble_puzzle.lower()} Transge HYPERCLAP"
 
         scramble_question = scramble_puzzle
 
@@ -600,14 +709,23 @@ since new scramble round started."
             await asyncio.sleep(1)
             if t == SCRAMBLE_HINT_TIME and scramble_started is True:
                 hint = scramble_answer[:3] + "_" * (len(scramble_answer) - 3)
-                await msg.reply(f"[Scramble] Hint: {hint}")
+                await msg.reply(f"[Scramble] Hint: {hint.lower()}")
             if t == SCRAMBLE_TIMEOUT and scramble_started is True:
                 await msg.reply(
-                    f'[Scramble] No one answered correctly. Madgay The word was: " {scramble_answer} "'
+                    f'[Scramble] No one answered correctly. Madgay The word was: " {scramble_answer.lower()} "'
                 )
                 # >>> record section <<<
                 record.add_outcome(SCRAMBLE_QID, "timeout")
                 record.write(SCRAMBLE_QID)
+                
+                # >>> completed game tracking for reports <<<
+                BlammoBot.last_completed_scramble = {
+                    'qid': SCRAMBLE_QID,
+                    'word': scramble_puzzle,  # scrambled word
+                    'answer': scramble_answer,  # unscrambled word
+                    'round_ended_timestamp': datetime.datetime.now()
+                }
+                
                 SCRAMBLE_QID = ""
                 scramble_started = False
                 return  # TODO: is break or return better here?
@@ -711,7 +829,11 @@ since new scramble round started."
         ROULETTE_COOLDOWN: int = 5
 
         # time since roulette cmd last run
-        delta = datetime.datetime.now() - timestamps.read("roulette_cmd")
+        roulette_start_time = timestamps.read("roulette_cmd")
+        if roulette_start_time:
+            delta = datetime.datetime.now() - roulette_start_time
+        else:
+            delta = datetime.timedelta(hours=1)  # Allow roulette if no previous time
         if delta <= datetime.timedelta(seconds=ROULETTE_COOLDOWN):
             logger.debug("Roulette command blocked -- in silent cooldown.")
             return
@@ -1059,6 +1181,65 @@ since new scramble round started."
         else:
             logger.error(f"Invalid subcommand not caught: {subcommand}")
             return
+
+    @Command(
+        "health",
+        help="Check database health and integrity",
+        permission="mod",
+        syntax="#health [all|trivia|scramble|user_data|timestamps|submissions|record_data]",
+    )
+    async def cmd_health(msg: Message):
+        """Check database health with optional database-specific checks"""
+        args = msg.content.split(" ")
+        
+        # Default to "all" if no subcommand provided
+        subcommand = "all"
+        if len(args) > 1:
+            subcommand = args[1].lower()
+        
+        # Map subcommand to database names
+        valid_databases = ["all", "trivia", "scramble", "user_data", "timestamps", "submissions", "record_data"]
+        
+        if subcommand not in valid_databases:
+            await msg.reply(f"[Health Check] ❌ Invalid database. Valid options: {', '.join(valid_databases)}")
+            return
+        
+        logger.info(f"[Health Check] {msg.author} called health command for: {subcommand}")
+        
+        try:
+            from utils.db_health import DatabaseHealthChecker
+            
+            checker = DatabaseHealthChecker()
+            
+            if subcommand == "all":
+                # Check all databases
+                issues = checker.check_all_databases()
+            else:
+                # Check specific database
+                issues = checker.check_specific_database(subcommand)
+            
+            critical_issues = [i for i in issues if i.severity == 'critical']
+            
+            # Log all issues found
+            if issues:
+                for issue in issues:
+                    log_level = logger.error if issue.severity == 'critical' else logger.warning
+                    location_info = f" at {issue.location}" if issue.location else ""
+                    log_level(f"[Health Check] {issue.database}: {issue.issue_type} - {issue.description}{location_info}")
+            
+            if not issues:
+                logger.info(f"[Health Check] {subcommand}: All databases healthy")
+                await msg.reply("[Health Check] DANKHACKERMANS All databases are healthy!" if subcommand == "all" else "[Health Check] DANKHACKERMANS Database is healthy!")
+            elif critical_issues:
+                logger.warning(f"[Health Check] {subcommand}: Found {len(critical_issues)} critical issues out of {len(issues)} total")
+                await msg.reply(f"[Health Check] DinkDonk ⚠️ Found {len(critical_issues)} critical database issues! ⚠️ DinkDonk")
+            else:
+                logger.info(f"[Health Check] {subcommand}: Found {len(issues)} non-critical issues")
+                await msg.reply(f"[Health Check] DankG ⚠️ Found {len(issues)} database issues (non-critical). ⚠️")
+                
+        except Exception as e:
+            logger.error(f"[Health Check] Error running database health check: {e}")
+            await msg.reply("[Health Check] GULP Database health check failed. Check logs for details.")
 
     @Command(
         "logger",
@@ -1676,6 +1857,294 @@ since new scramble round started."
         logger.debug(f"wa command out: {out}")
         await msg.reply("[WA] " + out, as_twitch_reply=True)
 
+    @Command(
+        "report",
+        help="Report a trivia or scramble game by ID or last completed",
+        syntax="#report <game_id> <reason> OR #report <trivia|scramble> <reason>",
+        cooldown=30
+    )
+    async def cmd_report(msg: Message):
+        logger.info(f"{msg.author} ran #report command: {msg.content}")
+        
+        # Parse command arguments
+        args = msg.content.split(" ", 2)  # Split into max 3 parts: #report, id_or_type, reason
+        
+        if len(args) < 3:
+            await msg.reply(
+                f"@{msg.author} Usage: #report <game_id> <reason> OR #report <trivia|scramble> <reason>",
+                as_twitch_reply=True
+            )
+            return
+            
+        id_or_type = args[1].lower()
+        reason = args[2]
+        
+        # Check if first argument is a game ID (starts with t or s followed by digits)
+        if id_or_type.startswith(('t', 's')) and len(id_or_type) > 1 and id_or_type[1:].isdigit():
+            # This is a game ID
+            game_id = id_or_type
+            logger.debug(f"Reporting by game ID: {game_id}")
+            
+            # Submit the report with game ID
+            success, message = report.submit_report_by_id(msg.author, game_id, reason)
+            
+        elif id_or_type in ['trivia', 'scramble']:
+            # This is the old format - use last completed game
+            logger.debug(f"Reporting last completed {id_or_type} game")
+            
+            # Get the appropriate completed game
+            if id_or_type == 'trivia':
+                completed_game = BlammoBot.last_completed_trivia
+            else:  # scramble
+                completed_game = BlammoBot.last_completed_scramble
+            
+            # Submit the report with completed game data
+            success, message = report.submit_report(msg.author, id_or_type, completed_game, reason)
+            
+        else:
+            await msg.reply(
+                f"@{msg.author} Invalid format. Use game ID (like t1234567890) or 'trivia'/'scramble'",
+                as_twitch_reply=True
+            )
+            return
+        
+        if success:
+            await msg.reply(f"@{msg.author} {message}", as_twitch_reply=True)
+            logger.info(f"Report submitted by {msg.author}: {id_or_type} - {reason}")
+        else:
+            await msg.reply(f"@{msg.author} {message}", as_twitch_reply=True)
+            logger.warning(f"Report failed from {msg.author}: {message}")
+
+    @Command(
+        "poll",
+        help="Manage polls: start, stop, extend, results",
+        syntax="#poll <start|stop|extend|results> [args]",
+        permission="mod"
+    )
+    async def cmd_poll(msg: Message):
+        global poll
+        logger.info(f"{msg.author} ran #poll command: {msg.content}")
+        
+        args = msg.content.split(" ", 2)
+        
+        if len(args) < 2:
+            await msg.reply(
+                f"@{msg.author} Usage: #poll <start|stop|extend|results> [args]",
+                as_twitch_reply=True
+            )
+            return
+        
+        subcommand = args[1].lower()
+        
+        if subcommand == "start":
+            if len(args) < 3:
+                await msg.reply(
+                    f"@{msg.author} Usage: #poll start <duration> <question> | <option1> | <option2> | ...",
+                    as_twitch_reply=True
+                )
+                return
+            
+            # Parse duration and question/options
+            content_parts = args[2].split(" ", 1)
+            if len(content_parts) < 2:
+                await msg.reply(
+                    f"@{msg.author} Usage: #poll start <duration> <question> | <option1> | <option2> | ...",
+                    as_twitch_reply=True
+                )
+                return
+            
+            duration = content_parts[0]
+            question_and_options = content_parts[1]
+            
+            # Split question and options by |
+            parts = [part.strip() for part in question_and_options.split("|")]
+            if len(parts) < 3:  # question + at least 2 options
+                await msg.reply(
+                    f"@{msg.author} Poll must have a question and at least 2 options separated by |",
+                    as_twitch_reply=True
+                )
+                return
+            
+            question = parts[0]
+            options = parts[1:]
+            
+            result = poll.start_poll(question, options, duration, msg.author, msg.channel.name)
+            await msg.reply(f"[Poll] {result}", as_twitch_reply=True)
+        
+        elif subcommand == "stop":
+            result = poll.stop_poll()
+            await msg.reply(f"[Poll] {result}", as_twitch_reply=True)
+        
+        elif subcommand == "extend":
+            if len(args) < 3:
+                await msg.reply(
+                    f"@{msg.author} Usage: #poll extend <duration>",
+                    as_twitch_reply=True
+                )
+                return
+            
+            duration = args[2]
+            result = poll.extend_poll(duration)
+            await msg.reply(f"[Poll] {result}", as_twitch_reply=True)
+        
+        elif subcommand == "results":
+            result = poll.get_results()
+            await msg.reply(f"[Poll] {result}", as_twitch_reply=True)
+        
+        else:
+            await msg.reply(
+                f"@{msg.author} Unknown subcommand. Use: start, stop, extend, results",
+                as_twitch_reply=True
+            )
+
+    @Command(
+        "pollvote",
+        help="Vote in an active poll",
+        syntax="#pollvote <option_number> or #pollvote <option_text>",
+        cooldown=5
+    )
+    async def cmd_pollvote(msg: Message):
+        global poll
+        logger.info(f"{msg.author} voted: {msg.content}")
+        
+        args = msg.content.split(" ", 1)
+        
+        if len(args) < 2:
+            await msg.reply(
+                f"@{msg.author} Usage: #pollvote <option_number> or #pollvote <option_text>",
+                as_twitch_reply=True
+            )
+            return
+        
+        vote_input = args[1]
+        result = poll.vote(msg.author, vote_input)
+        
+        # Only reply if there's an error message (non-empty result)
+        if result:
+            await msg.reply(f"[Poll] {result}", as_twitch_reply=True)
+
+    @Command(
+        "activepoll",
+        help="Show the current active poll",
+        cooldown=30
+    )
+    async def cmd_activepoll(msg: Message):
+        global poll
+        
+        if not poll.active:
+            await msg.reply("[Poll] No active poll", as_twitch_reply=True)
+            return
+        
+        # Get poll status and format it for display
+        if poll.is_expired():
+            await msg.reply("[Poll] Poll has ended but results not yet displayed", as_twitch_reply=True)
+            return
+        
+        # Show the poll question and options with time remaining
+        remaining = int((poll.end_time - datetime.datetime.now()).total_seconds())
+        remaining_display = poll._format_duration(remaining)
+        total_votes = len(poll.votes)
+        
+        options_text = "\n".join([f"{i+1}). {option}" for i, option in enumerate(poll.options)])
+        
+        poll_info = (f"NOTED Active poll by {poll.creator}: '{poll.question}'\n"
+                    f"{options_text}\n|| "
+                    f"Vote with #pollvote <number> or #pollvote <option>\n|| "
+                    f"Time remaining: {remaining_display} | Total votes: {total_votes}")
+        
+        await msg.reply(f"[Poll] {poll_info}", as_twitch_reply=True)
+
+
+# Initialize global poll instance
+poll = PollData()
+
+# Global variable to store bot instance for poll callbacks
+bot_instance = None
+
+async def poll_expired_callback(result_message):
+    """Callback function called when a poll expires via timer."""
+    global bot_instance, poll
+    logger.debug(f"Poll expired callback called with bot_instance: {bot_instance}")
+    
+    if bot_instance and poll.channel_name:
+        try:
+            channel_name = poll.channel_name
+            logger.debug(f"Sending poll expiration to channel: {channel_name}")
+            
+            # Debug: List available methods on bot instance
+            bot_methods = [method for method in dir(bot_instance) if not method.startswith('_')]
+            logger.debug(f"Available bot methods: {bot_methods}")
+            
+            # Try different methods to send message
+            if hasattr(bot_instance, 'get_channel'):
+                channel = bot_instance.get_channel(channel_name)
+                logger.debug(f"get_channel returned: {channel}")
+                if channel:
+                    channel_methods = [method for method in dir(channel) if not method.startswith('_')]
+                    logger.debug(f"Available channel methods: {channel_methods}")
+                    if hasattr(channel, 'send_message'):
+                        await channel.send_message(f"[Poll] {result_message}")
+                        logger.info(f"Poll auto-expired and results sent to {channel_name}")
+                        return
+            
+            # Alternative method - use bot's send method directly
+            if hasattr(bot_instance, 'send_privmsg'):
+                await bot_instance.send_privmsg(channel_name, f"[Poll] {result_message}")
+                logger.info(f"Poll auto-expired and results sent to {channel_name} via send_privmsg")
+                return
+            
+            # Try another method that might exist
+            if hasattr(bot_instance, 'send_message'):
+                await bot_instance.send_message(channel_name, f"[Poll] {result_message}")
+                logger.info(f"Poll auto-expired and results sent to {channel_name} via bot.send_message")
+                return
+            
+            # Try using the IRC connection directly
+            if hasattr(bot_instance, 'irc') and bot_instance.irc:
+                irc_methods = [method for method in dir(bot_instance.irc) if not method.startswith('_')]
+                logger.debug(f"Available IRC methods: {irc_methods}")
+                
+                # Try common IRC message sending methods
+                if hasattr(bot_instance.irc, 'send_privmsg'):
+                    await bot_instance.irc.send_privmsg(channel_name, f"[Poll] {result_message}")
+                    logger.info(f"Poll auto-expired and results sent to {channel_name} via irc.send_privmsg")
+                    return
+                elif hasattr(bot_instance.irc, 'privmsg'):
+                    await bot_instance.irc.privmsg(channel_name, f"[Poll] {result_message}")
+                    logger.info(f"Poll auto-expired and results sent to {channel_name} via irc.privmsg")
+                    return
+                elif hasattr(bot_instance.irc, 'send_message'):
+                    await bot_instance.irc.send_message(channel_name, f"[Poll] {result_message}")
+                    logger.info(f"Poll auto-expired and results sent to {channel_name} via irc.send_message")
+                    return
+                elif hasattr(bot_instance.irc, 'send'):
+                    await bot_instance.irc.send(f"PRIVMSG #{channel_name} :[Poll] {result_message}")
+                    logger.info(f"Poll auto-expired and results sent to {channel_name} via raw IRC send")
+                    return
+            
+            # Try methods that might exist for sending messages
+            for method_name in ['send', 'privmsg', 'message']:
+                if hasattr(bot_instance, method_name):
+                    method = getattr(bot_instance, method_name)
+                    try:
+                        await method(channel_name, f"[Poll] {result_message}")
+                        logger.info(f"Poll auto-expired and results sent to {channel_name} via {method_name}")
+                        return
+                    except Exception as e:
+                        logger.debug(f"Method {method_name} failed: {e}")
+                        continue
+                
+            logger.warning(f"Could not find method to send message to {channel_name}")
+        except Exception as e:
+            logger.error(f"Error sending poll expiration message: {e}")
+    else:
+        if not bot_instance:
+            logger.warning("Cannot send poll expiration message - bot instance not available")
+        else:
+            logger.warning("Cannot send poll expiration message - no channel name stored")
+
+# Set the callback for poll expiration
+poll.set_result_callback(poll_expired_callback)
 
 if __name__ == "__main__":
     logger.info("Starting bot...")
@@ -1686,7 +2155,47 @@ if __name__ == "__main__":
     # terminate blammobot loop when spam checker returns value
     # instantiate SpammoBot simultaneously
 
-    loop = asyncio.get_event_loop()
-    loop.create_task(check_online.check_loop())
-    loop.create_task(BlammoBot().run())
-    loop.run_forever()
+    bot_instance = None
+
+    try:
+        # Start check_online in a separate thread since bot will manage the main loop
+        import threading
+        def run_check_online():
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(check_online.check_loop())
+            except Exception as e:
+                logger.error(f"Critical error in check_online: {e}")
+                logger.error("Shutting down due to check_online failure...")
+                import os
+                os._exit(1)
+        
+        logger.info("Starting check_online task...")
+        check_thread = threading.Thread(target=run_check_online, daemon=True)
+        check_thread.start()
+        
+        logger.info("Starting BlammoBot...")
+        bot_instance = BlammoBot()
+        
+        # Set the main event loop for poll callbacks
+        import asyncio
+        try:
+            main_loop = asyncio.get_running_loop()
+            poll.set_main_loop(main_loop)
+        except RuntimeError:
+            # No loop running yet, it will be set when the bot starts
+            pass
+        
+        # Let the bot manage its own event loop
+        bot_instance.run()
+        
+    except KeyboardInterrupt:
+        logger.info("🛑 KeyboardInterrupt received - shutting down...")
+    except SystemExit:
+        pass  # Normal exit
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+    
+    finally:
+        logger.info("👋 Bot shutdown complete")

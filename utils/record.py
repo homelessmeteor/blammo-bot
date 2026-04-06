@@ -1,5 +1,6 @@
 import logging, random, os, sys, time, datetime
 import pandas as pd
+from utils.dbutils import ensure_file_ends_with_newline
 
 from log.loggers.custom_format import CustomFormatter  # for level colors
 
@@ -101,13 +102,12 @@ class Record:
         else:
             self.buffer = pd.concat([self.buffer, df], ignore_index=True)
 
+
     def _pop_to_file(self, qid: str) -> None:
         # pop the row with the given qid from the buffer dataframe
         # write the popped row to the file
         if self.buffer is None:
             raise ValueError("Buffer is empty")
-        with open(self.path, "a") as f:
-            f.write("\n")
 
         n_attempts = 0
         while n_attempts < 2:
@@ -123,7 +123,9 @@ class Record:
                 logger.debug(f"Buffer row: \n{buffer_row}")
                 df_row = pd.DataFrame(buffer_row).T
                 logger.debug(f"Put buffer row in dataframe")
-                df_row.to_csv(self.path, index=False, header=False, mode="a")
+                # Ensure file ends with newline before appending
+                ensure_file_ends_with_newline(self.path)
+                df_row.to_csv(self.path, index=False, header=False, mode="a", lineterminator='\n')
                 logger.debug(f"Successfully saved buffer row {row} to csv.")
                 self.buffer.drop(row, inplace=True)
                 logger.debug(f"Successfully dropped buffer row {row}.")
@@ -243,8 +245,6 @@ class Record:
 # self.time_elapsed: int          = 17
 # self.username: str              = 'diraction'
 # self.points_awarded: int        = 8
-# self.user_balance: int          = 780
-# self.loss_total: int            = 351
 # self.guess_string: str          = 'oaklahoma'
 # self.guess_similarity: float    = 0.8712794
 # self.question_string: str       = 'What musical was named after a u.s city'
@@ -259,8 +259,6 @@ class Record:
 # self.time_elapsed: int          = 9
 # self.username: str              = 'diraction'
 # self.points_awarded: int        = 10
-# self.user_balance: int          = 790                 balance
-# self.loss_total: int            = 351
 # self.guess_string: str          = 'gecko'             the user's actual guess
 # self.guess_similarity: float    = 1                   1 for all correct scramble guesses
 # self.question_string: str       = 'kogec'
@@ -275,10 +273,8 @@ class Record:
 # self.time_elapsed: int          = -1
 # self.username: str              = ''
 # self.points_awarded: int        = -1
-# self.user_balance: int          = -1
-# self.loss_total: int            = -1
 # self.guess_string: str          = ''
-# self.guess_similarity: float    = ''
+# self.guess_similarity: float    = -1
 # self.question_string: str       = 'What musical was named after a u.s city'
 # self.answer_string: str         = 'Oklahoma'
 
@@ -286,14 +282,12 @@ class Record:
 # >>> SCRAMBLE ROUND ENDED <<<
 # self.timestamp: float           = <timestamp>
 # self.qid: int                   = s0123456789          1+10 digit question id
-# self.game_type: str             = 'trivia'
+# self.game_type: str             = 'scramble'
 # self.outcome: str               = 'timeout'
 # self.time_elapsed: int          = -1
 # self.username: str              = ''
 # self.points_awarded: int        = -1
-# self.user_balance: int          = -1
-# self.loss_total: int            = -1
 # self.guess_string: str          = ''
-# self.guess_similarity: float    = ''
-# self.question_string: str       = 'What musical was named after a u.s city'
-# self.answer_string: str         = 'Oklahoma'
+# self.guess_similarity: float    = -1
+# self.question_string: str       = 'kogec'
+# self.answer_string: str         = 'gecko'

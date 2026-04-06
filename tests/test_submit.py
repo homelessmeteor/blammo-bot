@@ -9,6 +9,15 @@ import os
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Mock twitchbot before importing
+import sys
+from unittest.mock import MagicMock
+sys.modules['twitchbot'] = MagicMock()
+sys.modules['twitchbot.message'] = MagicMock()
+
+from mock_twitchbot import Message
+sys.modules['twitchbot'].message.Message = Message
+
 from utils import submit
 
 

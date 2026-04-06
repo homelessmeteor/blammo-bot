@@ -61,10 +61,19 @@ class Timestamps:
     def _create_timestamps_file(self) -> None:
         # create new timestamps csv file with filename self.fname
         logger.warning(f"File {self.fname} does not exist, creating it now")
-        logger.error(
-            f"The function _create_timestamps_file() has not been implemented yet."
-        )
-        pass
+        
+        # Create the directory if it doesn't exist
+        import os
+        os.makedirs(os.path.dirname(self.fname), exist_ok=True)
+        
+        # Create empty timestamps file with basic headers
+        # Use None-equivalent values that won't interfere with cooldown logic
+        current_time = datetime.datetime.now().timestamp()
+        initial_timestamps = {
+            "trivia_started": current_time - 3600,  # 1 hour ago to avoid cooldowns
+            "scramble_started": current_time - 3600,  # 1 hour ago to avoid cooldowns
+        }
+        self._write_to_file(initial_timestamps)
 
     def _load_from_file(self) -> dict:
         # loads the timestamps.csv file into a pandas dataframe
@@ -88,7 +97,8 @@ class Timestamps:
             return self._load_from_file()
         except Exception as e:
             logger.error(f"Exception on initializing timestamps file: {e}")
-            pass
+            # Return empty dict instead of None to prevent downstream errors
+            return {}
 
     def _write_to_file(self, timestamps: dict) -> None:
         # writes the dictionary to the timestamps.csv file
@@ -105,14 +115,18 @@ class Timestamps:
             logger.error(f"Exception on writing to timestamps file: {e}")
             pass
 
-    def read(self, event_name: str) -> datetime.datetime | float:
+    def read(self, event_name: str) -> datetime.datetime | None:
         # returns the timestamp of the event
         try:
+            if self.timestamps is None or event_name not in self.timestamps:
+                return None
             unix_time = self.timestamps[event_name]  # timestamp as a float in UNIX time
+            if unix_time == 0.0:
+                return None  # Return None for unset timestamps
             return self._float_to_timestamp(unix_time)
         except Exception as e:
             logger.error(f"Exception on reading timestamp from timestamps dict: {e}")
-            pass
+            return None
 
     def update(self, event_name: str) -> None:
         # writes the current time datetime.datetime.now() to the timestamps.csv file

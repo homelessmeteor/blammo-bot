@@ -1,5 +1,6 @@
 import pandas as pd
-import logging, random
+import logging, random, os
+from difflib import SequenceMatcher
 
 from log.loggers.custom_format import CustomFormatter  # for level colors
 
@@ -26,6 +27,21 @@ logger.addHandler(stream_handler)
 
 def _punctuation(s: str) -> str:
     pass
+
+
+def _ensure_file_ends_with_newline(file_path: str) -> None:
+    # Check if file exists and doesn't end with newline, add one
+    if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+        try:
+            with open(file_path, 'rb') as f:
+                f.seek(-1, 2)  # Go to last byte
+                last_byte = f.read(1)
+                if last_byte != b'\n':
+                    logger.debug(f"File {file_path} doesn't end with newline, adding one")
+                    with open(file_path, 'a') as append_file:
+                        append_file.write('\n')
+        except Exception as e:
+            logger.warning(f"Could not check/fix newline in {file_path}: {e}")
 
 
 def fuzzy_check(row):
@@ -113,11 +129,14 @@ class TriviaData:
                 if "not" not in str(q["question"]):  # TEMPORARY FIX!
                     found_valid = True
             else:
+                # Ensure file ends with newline before appending
+                _ensure_file_ends_with_newline("../blammo-bot-private/rejected_questions.csv")
                 q_df.to_csv(
                     "../blammo-bot-private/rejected_questions.csv",
                     mode="a",
                     header=False,
                     index=False,
+                    lineterminator='\n'
                 )
                 hbar = "=" * 81
                 logger.info(f"{hbar}\nQuestion disabled, trying again...")
@@ -145,6 +164,134 @@ class TriviaData:
             logger.info(f'Answer: {q["correct_answer"]}')
 
         return str(q["question"]), str(q["correct_answer"]), str(q["qid"])
+
+    def check_duplicates(self, similarity_threshold=0.8, answer_similarity_threshold=0.85):
+        """Check for duplicate and similar questions/answers using fuzzy matching.
+        
+        Args:
+            similarity_threshold (float): Minimum similarity ratio to consider questions similar (0.0-1.0)
+            answer_similarity_threshold (float): Minimum similarity ratio to consider answers similar (0.0-1.0)
+        """
+        if not self.allow_load or self.df is None:
+            logger.warning("Cannot check duplicates: data not loaded")
+            return
+            
+        logger.info("Starting duplicate check for trivia questions...")
+        
+        # Check for similar questions
+        self._check_similar_questions(similarity_threshold)
+        
+        # Check for duplicate answers (exact matches)
+        self._check_duplicate_answers()
+        
+        # Check for similar answers (fuzzy matches)
+        self._check_similar_answers(answer_similarity_threshold)
+        
+        logger.info("Duplicate check completed")
+    
+    def _check_similar_questions(self, threshold):
+        """Check for similar questions using fuzzy string matching."""
+        questions = self.df['question'].dropna().astype(str).tolist()
+        similar_pairs = []
+        
+        for i, q1 in enumerate(questions):
+            for j, q2 in enumerate(questions[i+1:], i+1):
+                similarity = SequenceMatcher(None, q1.lower(), q2.lower()).ratio()
+                if similarity >= threshold:
+                    qid1 = self.df.iloc[i]['qid'] if 'qid' in self.df.columns else f"row_{i}"
+                    qid2 = self.df.iloc[j]['qid'] if 'qid' in self.df.columns else f"row_{j}"
+                    similar_pairs.append({
+                        'qid1': qid1,
+                        'qid2': qid2,
+                        'question1': q1,
+                        'question2': q2,
+                        'similarity': similarity
+                    })
+        
+        if similar_pairs:
+            logger.warning(f"Found {len(similar_pairs)} pairs of similar questions:")
+            for pair in similar_pairs:
+                logger.warning(
+                    f"Similar questions (similarity: {pair['similarity']:.3f}):\n"
+                    f"  QID {pair['qid1']}: {pair['question1']}\n"
+                    f"  QID {pair['qid2']}: {pair['question2']}"
+                )
+        else:
+            logger.info("No similar questions found")
+    
+    def _check_duplicate_answers(self):
+        """Check for duplicate answers and log them separately."""
+        if 'correct_answer' not in self.df.columns:
+            logger.warning("No 'correct_answer' column found")
+            return
+            
+        answers = self.df['correct_answer'].dropna().astype(str)
+        answer_counts = answers.str.lower().value_counts()
+        duplicates = answer_counts[answer_counts > 1]
+        
+        if not duplicates.empty:
+            logger.warning(f"Found {len(duplicates)} duplicate answers:")
+            for answer, count in duplicates.items():
+                # Find all questions with this answer
+                matching_rows = self.df[self.df['correct_answer'].str.lower() == answer.lower()]
+                logger.warning(f"Answer '{answer}' appears {count} times:")
+                for _, row in matching_rows.iterrows():
+                    qid = row['qid'] if 'qid' in self.df.columns else "unknown"
+                    question = row['question'] if 'question' in self.df.columns else "unknown"
+                    logger.warning(f"  QID {qid}: {question}")
+        else:
+            logger.info("No duplicate answers found")
+    
+    def _check_similar_answers(self, threshold):
+        """Check for similar answers using fuzzy string matching."""
+        if 'correct_answer' not in self.df.columns:
+            logger.warning("No 'correct_answer' column found for similar answer check")
+            return
+            
+        answers = self.df['correct_answer'].dropna().astype(str).tolist()
+        similar_pairs = []
+        
+        # Track which answers we've already processed to avoid duplicates
+        processed_pairs = set()
+        
+        for i, a1 in enumerate(answers):
+            for j, a2 in enumerate(answers[i+1:], i+1):
+                # Skip if answers are exactly the same (handled by duplicate check)
+                if a1.lower() == a2.lower():
+                    continue
+                    
+                similarity = SequenceMatcher(None, a1.lower().strip(), a2.lower().strip()).ratio()
+                if similarity >= threshold:
+                    # Create a sorted pair key to avoid duplicate reporting
+                    pair_key = tuple(sorted([i, j]))
+                    if pair_key not in processed_pairs:
+                        processed_pairs.add(pair_key)
+                        
+                        qid1 = self.df.iloc[i]['qid'] if 'qid' in self.df.columns else f"row_{i}"
+                        qid2 = self.df.iloc[j]['qid'] if 'qid' in self.df.columns else f"row_{j}"
+                        q1 = self.df.iloc[i]['question'] if 'question' in self.df.columns else "unknown"
+                        q2 = self.df.iloc[j]['question'] if 'question' in self.df.columns else "unknown"
+                        
+                        similar_pairs.append({
+                            'qid1': qid1,
+                            'qid2': qid2,
+                            'question1': q1,
+                            'question2': q2,
+                            'answer1': a1,
+                            'answer2': a2,
+                            'similarity': similarity
+                        })
+        
+        if similar_pairs:
+            logger.warning(f"Found {len(similar_pairs)} pairs of similar answers:")
+            for pair in similar_pairs:
+                logger.warning(
+                    f"Similar answers (similarity: {pair['similarity']:.3f}):\n"
+                    f"  QID {pair['qid1']}: Q: {pair['question1'][:60]}{'...' if len(pair['question1']) > 60 else ''} | A: {pair['answer1']}\n"
+                    f"  QID {pair['qid2']}: Q: {pair['question2'][:60]}{'...' if len(pair['question2']) > 60 else ''} | A: {pair['answer2']}"
+                )
+        else:
+            logger.info("No similar answers found")
 
     @classmethod
     def check_guess(guess: str, answer: str) -> bool:

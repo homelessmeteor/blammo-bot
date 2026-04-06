@@ -2,6 +2,7 @@ import logging, os, sys, asyncio, re, time, datetime, csv
 from twitchbot.message import Message
 
 from log.loggers.custom_format import CustomFormatter  # for level colors
+from utils.dbutils import ensure_file_ends_with_newline
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -51,6 +52,14 @@ async def _check_safety(content):
 
     # TODO: make this function sensitive to special characters like \n.
     #       Adding it to the list below doesn't work for some reason.
+    
+    # Special check for ".." but allow "..." and more dots
+    # Block patterns with exactly two dots but allow three or more
+    if re.search(r'(^|[^.])\.\.[^.]', content) or content == ".." or content.startswith("../") or content.endswith("/.."):
+        # This matches ".." that is not part of "..." or longer sequences
+        logger.error(f"[ACTION REQUIRED] content contains suspicious '..' pattern: {content}")
+        return False
+    
     if any(
         i in content
         for i in [
@@ -61,7 +70,6 @@ async def _check_safety(content):
             "eval(",
             "exec(",
             "open(",
-            # "..",
             "0x27",
             "0x3f",
             "0x5c",
@@ -208,7 +216,7 @@ async def _parse_question(content: str, game: str):
 #         return f'"{s}"'
 
 
-async def _check_scrable_duplicate(word: str):
+async def _check_scramble_duplicate(word: str):
     """
     Checks current scramble list to see if word has already been used.
 
@@ -220,12 +228,35 @@ async def _check_scrable_duplicate(word: str):
 
     """
     global SCRAMBLE_PATH
+    
+    try:
+        # Read the scramble CSV file
+        with open(SCRAMBLE_PATH, "r", encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            # Check if word already exists (case insensitive)
+            for row in reader:
+                if 'word' in row and row['word'].lower() == word.lower():
+                    logger.info(f"Duplicate scramble word detected: {word}")
+                    return False
+        
+        # Read the submissions CSV file
+        with open(SUBMISSION_FNAME, "r", encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            # Check if word already exists (case insensitive)
+            for row in reader:
+                if 'word' in row and row['word'].lower() == word.lower():
+                    logger.info(f"Duplicate scramble word detected: {word}")
+                    return False
+        # Word not found in existing database
+        return True
+        
+    except FileNotFoundError:
+        logger.warning(f"Scramble file not found: {SCRAMBLE_PATH}")
+        return True  # Allow submission if file doesn't exist
+    except Exception as e:
+        logger.error(f"Error checking scramble duplicates: {e}")
+        return True  # Allow submission on error to avoid blocking users
 
-    # open scramble.csv and read the first row
-    with open(SCRAMBLE_PATH, "r") as f:
-        reader = csv.reader(f)
-        first_row = next(reader)
-        words = first_row[0].split(" ")
 
 
 async def _write_dict_to_csv(d: dict):
@@ -239,16 +270,18 @@ async def _write_dict_to_csv(d: dict):
     if not os.path.isfile(SUBMISSION_FNAME):
         # if the file does not exist, create it and write the header
         with open(SUBMISSION_FNAME, "w") as f:
-            f.write("username,question,answer,raw,timestamp\n")
+            f.write("username,question,answer,word,raw,timestamp\n")
 
     # now, write the dictionary to the csv file
     try:
+        # Ensure file ends with newline before appending
+        ensure_file_ends_with_newline(SUBMISSION_FNAME)
         # with open(SUBMISSION_FNAME, 'a') as f:
         #     f.write(f'"{d["username"]}","{d["question"]}","{d["answer"]}","{d["raw"]}","{d["timestamp"]}"\n')
         # use csv module instead of writing to file directly
         with open(SUBMISSION_FNAME, "a", newline="") as f:
             writer = csv.writer(
-                f, delimiter=",", quotechar='"', quoting=csv.QUOTE_MINIMAL
+                f, delimiter=",", quotechar='"', quoting=csv.QUOTE_MINIMAL, lineterminator='\n'
             )
             writer.writerow(
                 [
@@ -367,6 +400,12 @@ async def submit(msg: Message) -> str | bool:
         return (
             f"That word is too long. Please keep it under {MAX_WORD_LENGTH} characters."
         )
+    elif game == "scramble":
+        # Check for duplicate scramble words
+        is_unique = await _check_scramble_duplicate(word)
+        if not is_unique:
+            logger.info(f"User {author} tried to submit duplicate scramble word: {word}")
+            return f"DankG scramble for '{word}' already exists."
 
     outcome: bool = await _write_dict_to_csv(submission)
     if outcome:
